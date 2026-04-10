@@ -1,0 +1,45 @@
+# Secrets and local env
+.env
+.env.*
+*.token
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Build and packaging
+build/
+dist/
+*.skill
+*.tgz
+
+# Runtime output / local scratch
+.tmp/
+tmp/
+.local/
+*.pid
+*.log
+
+# OpenClaw / local tooling
+.agent/
+.serena/
+.claude/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
