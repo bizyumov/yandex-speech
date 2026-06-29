@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,77 @@ class SpeechTranscriber:
         finally:
             if cleanup is not None:
                 cleanup.unlink(missing_ok=True)
+
+    def transcribe_auto(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
+        try:
+            return self.transcribe_direct(path, language_code=language_code, diarize=diarize)
+        except SttError as exc:
+            message = str(exc)
+            if "audio should be less than 1 mb" not in message and "audio duration should be less than 30s" not in message:
+                raise
+            return self.transcribe_chunked_direct(path, language_code=language_code, diarize=diarize)
+
+    def transcribe_chunked_direct(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
+        if not has_ffmpeg():
+            raise SttError("Chunked direct STT fallback requires ffmpeg")
+        with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as tmp:
+            tmp_path = Path(tmp)
+            pattern = tmp_path / "chunk_%03d.ogg"
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(path),
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "16k",
+                    "-f",
+                    "segment",
+                    "-segment_time",
+                    "25",
+                    "-reset_timestamps",
+                    "1",
+                    str(pattern),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            chunks = sorted(tmp_path.glob("chunk_*.ogg"))
+            if result.returncode != 0 or not chunks:
+                raise SttError(f"ffmpeg split for direct STT failed: {result.stderr[-500:]}")
+
+            segments: list[dict[str, Any]] = []
+            full_text: list[str] = []
+            offset = 0.0
+            for chunk in chunks:
+                data = self.transcribe_direct(chunk, language_code=language_code, diarize=diarize)
+                duration = probe_duration(chunk) or 25.0
+                for segment in data.get("segments", []):
+                    shifted = dict(segment)
+                    shifted["start"] = float(segment.get("start", 0.0) or 0.0) + offset
+                    shifted["end"] = float(segment.get("end", 0.0) or 0.0) + offset
+                    segments.append(shifted)
+                text = data.get("text", "").strip()
+                if text:
+                    full_text.append(text)
+                offset += duration
+
+            return {
+                "text": "\n".join(full_text),
+                "segments": segments,
+                "raw": {"chunks": [str(chunk) for chunk in chunks]},
+                "mode": "direct-chunked",
+                "diarization_requested": diarize,
+                "source_input": str(path),
+            }
 
     def transcribe_async_s3(self, path: Path, *, language_code: str, diarize: bool, poll_interval: float = 5.0) -> dict[str, Any]:
         uri = upload_to_object_storage(path)
@@ -188,6 +260,31 @@ def probe_sample_rate(path: Path) -> int:
         return 48000
 
 
+def probe_duration(path: Path) -> float:
+    if subprocess.run(["bash", "-lc", "command -v ffprobe >/dev/null 2>&1"], check=False).returncode != 0:
+        return 0.0
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(path),
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
 def normalize_async_result(payload: dict[str, Any], *, uri: str, operation_id: str) -> dict[str, Any]:
     response = payload.get("response", {})
     chunks = response.get("chunks", [])
@@ -300,7 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=["json", "txt", "srt", "vtt"], default="json")
     parser.add_argument("--lang", default=DEFAULT_LANG)
     parser.add_argument("--diarize", action="store_true")
-    parser.add_argument("--mode", choices=["direct", "async-s3"], default="direct")
+    parser.add_argument("--mode", choices=["auto", "direct", "async-s3"], default="auto")
     return parser
 
 
@@ -312,7 +409,9 @@ def main() -> int:
         return 2
     try:
         transcriber = SpeechTranscriber()
-        if args.mode == "direct":
+        if args.mode == "auto":
+            data = transcriber.transcribe_auto(source, language_code=args.lang, diarize=args.diarize)
+        elif args.mode == "direct":
             data = transcriber.transcribe_direct(source, language_code=args.lang, diarize=args.diarize)
         else:
             data = transcriber.transcribe_async_s3(source, language_code=args.lang, diarize=args.diarize)
