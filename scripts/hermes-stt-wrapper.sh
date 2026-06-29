@@ -27,5 +27,5 @@ if [[ -n "${HERMES_HOME:-}" ]]; then
 fi
 
 python3 "$script_dir/transcribe.py" "$source_path" \
-  --mode direct --lang "$language" --format txt \
+  --mode auto --lang "$language" --format txt \
   --output "$output_dir/transcript.txt"
