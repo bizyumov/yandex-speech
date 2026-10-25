@@ -1,0 +1,69 @@
+name: Phase 1 acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: Standard Hermes / ${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [base, grpc, storage]
+    env:
+      UV_PROJECT_ENVIRONMENT: /opt/hermes/venv
+      UV_NO_PROGRESS: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14.9"
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: "0.9.29"
+      - name: Prepare the canonical standard Hermes runtime
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hermes
+          git clone --branch v0.22.5 --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes/src
+          test "$(git -C /opt/hermes/src rev-parse HEAD)" = bf0203a794a07aac3ff764972ab9087baa4e4f4e
+          uv sync --project /opt/hermes/src --frozen --no-dev --python "$(command -v python)"
+          uv pip install --python /opt/hermes/venv/bin/python -r requirements.txt -r requirements-dev.txt
+      - name: Admit the optional profile
+        shell: bash
+        run: |
+          if [[ "${{ matrix.profile }}" == grpc ]]; then
+            uv pip install --python /opt/hermes/venv/bin/python -r requirements-grpc.txt "protobuf==6.33.6" "googleapis-common-protos==1.75.1" "requests==2.33.0"
+          fi
+          if [[ "${{ matrix.profile }}" == storage ]]; then
+            uv pip install --python /opt/hermes/venv/bin/python "boto3==1.42.89"
+            /opt/hermes/venv/bin/python -c "import boto3; assert boto3.__version__ == '1.42.89'"
+          fi
+      - name: Validate native dependency constraints
+        shell: bash
+        run: |
+          /opt/hermes/venv/bin/python -c 'import subprocess,sys; from pathlib import Path; from pm.pip_check import unexpected_incompatibilities; r=subprocess.run(["uv","pip","check","--python",sys.executable],capture_output=True,text=True); problems=unexpected_incompatibilities(r.stdout+r.stderr,Path("/opt/hermes/src/uv.lock")); print("Unexpected dependency incompatibilities:",len(problems)); sys.exit(bool(problems))'
+      - name: Run offline acceptance
+        run: /opt/hermes/venv/bin/python -m tests --phase 1 --profile ${{ matrix.profile }}
+      - name: Verify source and wrapper syntax
+        shell: bash
+        run: |
+          /opt/hermes/venv/bin/python -m compileall -q yandex_speech scripts integrations tests
+          bash -n scripts/hermes-stt-wrapper.sh scripts/hermes-tts-wrapper.sh
+          git diff --check
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: phase1-${{ matrix.profile }}-evidence
+          path: .agent/tasks/public-release/testing-evidence/phase1-*.json
+          include-hidden-files: true

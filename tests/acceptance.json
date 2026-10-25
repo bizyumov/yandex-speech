@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "phase": 1,
+  "scope": "New skill baseline and gRPC v3 speech transcription; later-phase acceptance is excluded.",
+  "acceptance": {
+    "AC01": {
+      "offline": [
+        "tests.test_baseline.BaselineTests.test_skill_entry_and_links_are_self_contained",
+        "tests.test_baseline.BaselineTests.test_wheel_and_sdist_payload_work_outside_checkout"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC02": {
+      "offline": [
+        "tests.test_baseline.BaselineTests.test_version_changelog_mit_and_plugin_projection",
+        "tests.test_cli.CliTests.test_version_works_from_external_directory_without_credentials"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC03": {
+      "offline": [
+        "tests.test_public_api"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC04": {
+      "offline": [
+        "tests.test_config.ConfigTests.test_workspace_scope_isolation_does_not_mutate_home",
+        "tests.test_hermes.HermesBindingTests.test_user_file_remains_above_profile_and_host_language_defaults"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC05": {
+      "offline": [
+        "tests.test_config.ConfigTests.test_only_explicit_cli_file_selects_another_path",
+        "tests.test_config.ConfigTests.test_missing_explicit_invalid_and_unknown_files_fail",
+        "tests.test_cli.CliTests.test_cli_only_selector_and_explicit_false_reach_core"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC06": {
+      "offline": [
+        "tests.test_config.ConfigTests.test_call_file_adapter_builtin_precedence",
+        "tests.test_config.ConfigTests.test_profile_defaults_precede_environment_only_within_adapter_layer",
+        "tests.test_legacy_tts.LegacyTtsTests.test_file_overrides_legacy_environment_and_explicit_voice_wins",
+        "tests.test_storage.StorageContractTests.test_explicit_bucket_precedes_file_and_environment_defaults"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC07": {
+      "offline": [
+        "tests.test_readiness",
+        "tests.test_legacy_stt.LegacySttTests.test_http_error_categories_and_status_are_retained_without_payload"
+      ],
+      "provider": [
+        "tests.provider.test_recording.LiveRecordingTests.test_real_recording_receipt_resume_literary_and_exports"
+      ],
+      "host": []
+    },
+    "AC08": {
+      "offline": [
+        "tests.test_media",
+        "tests.test_timeline"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC09": {
+      "offline": [
+        "tests.test_grpc_file"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC10": {
+      "offline": [
+        "tests.test_grpc_file",
+        "tests.test_job_recovery"
+      ],
+      "provider": [
+        "tests.provider.test_recording.LiveRecordingTests.test_real_recording_receipt_resume_literary_and_exports"
+      ],
+      "host": []
+    },
+    "AC11": {
+      "offline": [
+        "tests.test_results",
+        "tests.test_job_recovery"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC12": {
+      "offline": [
+        "tests.test_results",
+        "tests.test_grpc_file.GrpcFileTests.test_actual_protobuf_fields_and_effective_policy"
+      ],
+      "provider": [
+        "tests.provider.test_recording.LiveRecordingTests.test_real_recording_receipt_resume_literary_and_exports"
+      ],
+      "host": []
+    },
+    "AC13": {
+      "offline": [
+        "tests.test_results"
+      ],
+      "provider": [
+        "tests.provider.test_recording.LiveRecordingTests.test_real_two_speaker_timing_and_final_tail"
+      ],
+      "host": []
+    },
+    "AC14": {
+      "offline": [
+        "tests.test_streaming"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC15": {
+      "offline": [
+        "tests.test_streaming"
+      ],
+      "provider": [
+        "tests.provider.test_streaming.LiveStreamingTests.test_real_paced_stream_retains_full_tail_and_finishes"
+      ],
+      "host": []
+    },
+    "AC16": {
+      "offline": [
+        "tests.test_streaming",
+        "tests.test_stream_api",
+        "tests.test_lifecycle"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC17": {
+      "offline": [
+        "tests.test_hermes"
+      ],
+      "provider": [],
+      "host": [
+        "tests.provider.test_hermes.LiveHermesTests.test_real_host_file_and_arriving_turn"
+      ]
+    },
+    "AC18": {
+      "offline": [
+        "tests.test_public_api",
+        "tests.test_cli",
+        "tests.test_legacy_stt",
+        "tests.test_legacy_tts",
+        "tests.test_storage"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC19": {
+      "offline": [
+        "tests.test_artifacts",
+        "tests.test_job_recovery",
+        "tests.test_legacy_tts.LegacyTtsTests.test_tts_cli_cannot_replace_its_text_source_even_with_overwrite",
+        "tests.test_storage.StorageContractTests.test_unique_owned_keys_and_nonsecret_storage_defaults"
+      ],
+      "provider": [],
+      "host": []
+    },
+    "AC20": {
+      "offline": [
+        "tests.test_acceptance_runner",
+        "tests.test_baseline"
+      ],
+      "provider": [
+        "tests.provider.test_recording",
+        "tests.provider.test_streaming"
+      ],
+      "host": [
+        "tests.provider.test_hermes"
+      ]
+    }
+  }
+}

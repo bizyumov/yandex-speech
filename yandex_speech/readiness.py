@@ -1,0 +1,107 @@
+"""Non-mutating, secret-safe readiness checks; execution is explicit opt-in."""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import shutil
+from pathlib import Path
+
+from .config import RuntimeContext, resolve_settings
+from .errors import SpeechError
+
+
+def _available(module):
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError, ModuleNotFoundError):
+        return False
+
+
+def check(*, _context=None, _environment=None, _probe=None):
+    env = os.environ if _environment is None else _environment
+    context = _context or RuntimeContext(user_home=Path(env.get("HOME") or Path.home()),
+        workspace=Path(env["HERMES_HOME"]) if env.get("HERMES_HOME") else None)
+    settings = resolve_settings(_context=context, _environment=env)
+    grpc = all(_available(m) for m in ["grpc", "grpc_tools", "yandex.cloud.ai.stt.v3.stt_pb2"])
+    key_present = bool(env.get("YANDEX_SPEECH_API_KEY"))
+    version = settings.value("api_version")
+    version = "3" if version == "auto" else version
+    selected_transport = settings.value("transport")
+    route_transport = ("grpc" if version == "3" else "rest") if selected_transport == "auto" else selected_transport
+    route_available = grpc if (version,route_transport) == ("3","grpc") else (
+        _available("requests") if (version,route_transport) == ("1","rest") else
+        _available("boto3") and bool(settings.value("object_storage.bucket"))
+        and bool(env.get("YANDEX_SPEECH_AWS_ACCESS_KEY_ID"))
+        and bool(env.get("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"))
+        if (version,route_transport) == ("2","rest") else False)
+    report = {
+        "authentication": {"status": "present-unverified" if key_present else "missing",
+                           "credential": "YANDEX_SPEECH_API_KEY"},
+        "permissions": {
+            "status": "unverified",
+            "verified_operation": None,
+            "tts_execution_status": "unverified",
+            "stt_role": "ai.speechkit-stt.user",
+            "stt_scope": "yc.ai.speechkitStt.execute",
+            "tts_role": "ai.speechkit-tts.user",
+            "tts_scope": "yc.ai.speechkitTts.execute",
+            "remedy": "Ask the service-account owner to verify roles on the resource and the API key execution scopes. Supply the authorized service account to the agent for setup planning; key creation helpers are Phase 2.",
+        },
+        "config_file": str(settings.path),
+        "effective": settings.speech,
+        "sources": settings.sources,
+        "dependencies": {"requests": _available("requests"), "grpc": grpc,
+                         "storage": _available("boto3"),
+                         "ffmpeg": bool(shutil.which("ffmpeg")),
+                         "ffprobe": bool(shutil.which("ffprobe"))},
+        "effective_route": {"api_version": version, "transport": route_transport,
+                            "available": bool(route_available)},
+        "options": [
+            {"route": "gRPC v3", "status": "implemented", "tradeoff": "Recorded and arriving audio; optional generated gRPC dependencies."},
+            {"route": "REST v1 direct/split, REST v2 + S3", "status": "legacy", "tradeoff": "Existing explicit entry points; no v3 timing/speaker or streaming equivalence."},
+            {"route": "gRPC v3 -> REST v3 + S3 -> ffmpeg split REST v1", "status": "Phase 2", "tradeoff": "Complete automatic fallback is not implemented in Phase 1."},
+        ],
+    }
+    if _probe is not None and key_present:
+        try:
+            result = _probe()
+            if not result.get("input_complete"):
+                raise SpeechError("OUTPUT_PARTIAL", "probe did not complete")
+            report["authentication"]["status"] = "execution-verified"
+            report["permissions"]["status"] = "execution-verified"
+            report["permissions"]["verified_operation"] = "speech-transcription"
+        except SpeechError as error:
+            report["authentication"]["status"] = "rejected" if error.category == "AUTH" else "present-unverified"
+            report["permissions"]["status"] = "denied-cause-unverified" if error.category == "PERMISSION" else "unverified"
+            report["probe_error"] = {"category": error.category}
+    return report
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="Check prerequisites without changing configuration")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--probe-audio", type=Path, help="Explicitly submit this synthetic recording; incurs API usage")
+    args = parser.parse_args(argv)
+    context = RuntimeContext(user_home=Path.home(),
+        workspace=Path(os.environ["HERMES_HOME"]) if os.getenv("HERMES_HOME") else None,
+        selected_file=args.config)
+    probe = None
+    if args.probe_audio is not None:
+        from .transcription import SpeechTranscriber
+        probe = lambda: SpeechTranscriber(_context=context).transcribe_auto(args.probe_audio)
+    try:
+        report = check(_context=context, _probe=probe)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if report["authentication"]["status"] not in {"present-unverified", "execution-verified"} or "probe_error" in report:
+            return 2
+        return 0 if report["effective_route"]["available"] else 3
+    except SpeechError as error:
+        print(json.dumps({"error": {"category": error.category, "message": str(error)}}))
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

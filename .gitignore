@@ -35,6 +35,7 @@ tmp/
 
 # OpenClaw / local tooling
 .agent/
+.gitmark/
 .serena/
 .claude/
 .vscode/

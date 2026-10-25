@@ -1,0 +1,8 @@
+name: yandex-speech
+version: 0.1.0
+description: Yandex SpeechKit recorded and arriving-audio transcription
+author: Boris Izyumov
+license: MIT
+requires_hermes: ">=0.22.5"
+requires_env:
+  - YANDEX_SPEECH_API_KEY

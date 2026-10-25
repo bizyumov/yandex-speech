@@ -15,6 +15,13 @@ from typing import Any
 
 import requests
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from yandex_speech.transcription import SpeechTranscriber
+from yandex_speech.media import prepare_audio
+from yandex_speech.errors import SpeechError
+
 try:
     import boto3
 except ImportError:  # pragma: no cover
@@ -37,43 +44,58 @@ def require_env(name: str) -> str:
     return value
 
 
-class SpeechTranscriber:
+class _LegacySpeechTranscriber:
     def __init__(self, api_key: str | None = None, folder_id: str | None = None) -> None:
         self.api_key = api_key or require_env("YANDEX_SPEECH_API_KEY")
-        self.folder_id = folder_id or require_env("YANDEX_CLOUD_FOLDER_ID")
+        self.folder_id = folder_id or os.getenv("YANDEX_CLOUD_FOLDER_ID")
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Api-Key {self.api_key}"})
 
+    def _remaining(self):
+        deadline=getattr(self,"deadline_at",time.monotonic()+120)
+        remaining=deadline-time.monotonic()
+        if remaining <= 0:
+            raise SpeechError("TIMEOUT","legacy recognition deadline expired")
+        return min(120,remaining)
+
     def transcribe_direct(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
-        prepared_path, cleanup, extra_params = prepare_sync_audio(path)
-        try:
-            with open(prepared_path, "rb") as handle:
-                response = self.session.post(
-                    SYNC_URL,
-                    params={
-                        "folderId": self.folder_id,
-                        "lang": language_code,
-                        "topic": "general",
-                        **extra_params,
-                    },
-                    data=handle,
-                    timeout=600,
-                )
-            if response.status_code >= 400:
-                raise SttError(f"Direct STT failed: {response.status_code} {response.text}")
-            payload = response.json()
-            text = payload.get("result", "")
-            return {
-                "text": text,
-                "segments": [{"start": 0.0, "end": 0.0, "speaker": None, "text": text}] if text else [],
-                "raw": payload,
-                "mode": "direct",
-                "diarization_requested": diarize,
-                "prepared_input": str(prepared_path),
-            }
-        finally:
-            if cleanup is not None:
-                cleanup.unlink(missing_ok=True)
+        import wave
+        if diarize:
+            raise SttError("v1 direct recognition does not provide speaker labels")
+        with prepare_audio(Path(path),audio_input=getattr(self,"audio_input",None),
+                           audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as audio:
+            if audio.duration_ms > 30_000:
+                raise SttError("audio duration should be less than 30s")
+            if audio.container == "OGG_OPUS":
+                content=audio.path.read_bytes()
+                params={"format":"oggopus"}
+            elif audio.container == "WAV":
+                with wave.open(str(audio.path),"rb") as stream:
+                    content=stream.readframes(stream.getnframes())
+                params={"format":"lpcm","sampleRateHertz":str(audio.sample_rate_hertz)}
+            else:
+                result=subprocess.run(["ffmpeg","-nostdin","-v","error","-i",str(audio.path),
+                    "-vn","-ac","1","-ar","16000","-f","s16le","pipe:1"],
+                    stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=self._remaining())
+                if result.returncode:
+                    raise SttError("ffmpeg failed to prepare v1 audio")
+                content=result.stdout
+                params={"format":"lpcm","sampleRateHertz":"16000"}
+            if len(content)>=1_000_000:
+                raise SttError("audio should be less than 1 mb")
+            response=self.session.post(SYNC_URL,
+                params={"lang":language_code,"topic":"general","profanityFilter":"false","rawResults":"true",**params},
+                data=content,timeout=self._remaining())
+            if response.status_code>=400:
+                category={401:"AUTH",403:"PERMISSION",429:"RATE_LIMIT"}.get(response.status_code,"PROVIDER")
+                remedy="; verify service-account roles and API-key execution scope; denial alone does not identify the missing grant" if response.status_code == 403 else ""
+                raise SpeechError(category,f"Direct STT failed: HTTP {response.status_code}{remedy}",code=str(response.status_code))
+            payload=response.json()
+            text=payload.get("result","")
+            return {"text":text,
+                    "segments":[{"start":None,"end":None,"speaker":None,"text":text}] if text else [],
+                    "raw":payload,"mode":"direct","diarization_requested":False,
+                    "source_info":audio.source_info}
 
     def transcribe_auto(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
         try:
@@ -86,68 +108,37 @@ class SpeechTranscriber:
 
     def transcribe_chunked_direct(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
         if not has_ffmpeg():
-            raise SttError("Chunked direct STT fallback requires ffmpeg")
-        with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as tmp:
-            tmp_path = Path(tmp)
-            pattern = tmp_path / "chunk_%03d.ogg"
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(path),
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "16000",
-                    "-c:a",
-                    "libopus",
-                    "-b:a",
-                    "16k",
-                    "-f",
-                    "segment",
-                    "-segment_time",
-                    "25",
-                    "-reset_timestamps",
-                    "1",
-                    str(pattern),
-                ],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            chunks = sorted(tmp_path.glob("chunk_*.ogg"))
-            if result.returncode != 0 or not chunks:
-                raise SttError(f"ffmpeg split for direct STT failed: {result.stderr[-500:]}")
-
-            segments: list[dict[str, Any]] = []
-            full_text: list[str] = []
-            offset = 0.0
-            for chunk in chunks:
-                data = self.transcribe_direct(chunk, language_code=language_code, diarize=diarize)
-                duration = probe_duration(chunk) or 25.0
-                for segment in data.get("segments", []):
-                    shifted = dict(segment)
-                    shifted["start"] = float(segment.get("start", 0.0) or 0.0) + offset
-                    shifted["end"] = float(segment.get("end", 0.0) or 0.0) + offset
-                    segments.append(shifted)
-                text = data.get("text", "").strip()
-                if text:
-                    full_text.append(text)
-                offset += duration
-
-            return {
-                "text": "\n".join(full_text),
-                "segments": segments,
-                "raw": {"chunks": [str(chunk) for chunk in chunks]},
-                "mode": "direct-chunked",
-                "diarization_requested": diarize,
-                "source_input": str(path),
-            }
+            raise SttError("legacy split recognition requires ffmpeg")
+        with prepare_audio(Path(path),audio_input=getattr(self,"audio_input",None),
+                           audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as prepared:
+            with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as tmp:
+                pattern=Path(tmp)/"chunk_%03d.ogg"
+                raw_args=(["-f","s16le","-ar",str(prepared.sample_rate_hertz),"-ac","1"]
+                          if prepared.container == "LPCM" else [])
+                result=subprocess.run(["ffmpeg","-nostdin","-v","error",*raw_args,
+                    "-i",str(prepared.path),"-ac","1","-ar","16000","-c:a","libopus",
+                    "-b:a","16k","-f","segment","-segment_time","25","-reset_timestamps","1",
+                    str(pattern)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                    timeout=self._remaining())
+                chunks=sorted(Path(tmp).glob("chunk_*.ogg"))
+                if result.returncode or not chunks:
+                    raise SttError("legacy ffmpeg splitting failed")
+                texts,segments,raw=[],[],[]
+                for chunk in chunks:
+                    child=_LegacySpeechTranscriber(self.api_key,self.folder_id)
+                    child.session=self.session
+                    if hasattr(self,"deadline_at"):
+                        child.deadline_at=self.deadline_at
+                    data=child.transcribe_direct(chunk,language_code=language_code,diarize=diarize)
+                    texts.append(data.get("text",""))
+                    segments.extend(data.get("segments",[]))
+                    raw.append(data.get("raw"))
+                return {"text":"\n".join(t for t in texts if t),
+                        "segments":segments,"raw":{"chunks":raw},"mode":"direct-chunked",
+                        "diarization_requested":False,"source_info":prepared.source_info}
 
     def transcribe_async_s3(self, path: Path, *, language_code: str, diarize: bool, poll_interval: float = 5.0) -> dict[str, Any]:
-        uri = upload_to_object_storage(path)
+        uri = upload_to_object_storage(path, _storage=getattr(self, "storage", None))
         request = {
             "config": {
                 "specification": {
@@ -164,16 +155,20 @@ class SpeechTranscriber:
         response.raise_for_status()
         operation = response.json()
         operation_id = operation["id"]
-        while True:
+        deadline = time.monotonic() + 1800
+        if type(poll_interval) not in (int,float) or not 0 < poll_interval <= 120:
+            raise SttError("poll interval must be in (0, 120] seconds")
+        while time.monotonic() < deadline:
             current = self.session.get(f"{OPERATIONS_URL}/{operation_id}", timeout=120)
             current.raise_for_status()
             payload = current.json()
             if payload.get("done"):
                 if "error" in payload:
-                    raise SttError(json.dumps(payload["error"], ensure_ascii=False))
+                    raise SttError("legacy accepted operation failed; retain its operation ID for recovery")
                 return normalize_async_result(payload, uri=uri, operation_id=operation_id)
             print(f"waiting for operation {operation_id}", file=sys.stderr)
             time.sleep(poll_interval)
+        raise SttError("legacy wait expired; retain the accepted operation ID")
 
 
 def prepare_sync_audio(path: Path) -> tuple[Path, Path | None, dict[str, str]]:
@@ -199,22 +194,23 @@ def prepare_sync_audio(path: Path) -> tuple[Path, Path | None, dict[str, str]]:
     return converted, converted, {"format": "oggopus"}
 
 
-def upload_to_object_storage(path: Path) -> str:
+def upload_to_object_storage(path: Path, *, _storage=None) -> str:
+    import uuid
+    from yandex_speech.config import resolve_settings
     if boto3 is None:
-        raise SttError("boto3 is required for async-s3 mode")
-    bucket = require_env("YANDEX_SPEECH_S3_BUCKET")
-    access_key = require_env("YANDEX_SPEECH_AWS_ACCESS_KEY_ID")
-    secret_key = require_env("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY")
-    prefix = os.getenv("YANDEX_SPEECH_S3_PREFIX", "speechkit")
-    endpoint = os.getenv("YANDEX_SPEECH_S3_ENDPOINT", "https://storage.yandexcloud.net")
-    key = f"{prefix.rstrip('/')}/{path.name}"
-    client = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-    )
-    client.upload_file(str(path), bucket, key)
+        raise SttError("boto3 is required for explicit legacy async-s3 mode")
+    storage=_storage if _storage is not None else resolve_settings().value("object_storage")
+    bucket=storage.get("bucket")
+    if not bucket:
+        raise SttError("configure an existing authorized object-storage bucket")
+    access_key=require_env("YANDEX_SPEECH_AWS_ACCESS_KEY_ID")
+    secret_key=require_env("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY")
+    prefix=storage.get("prefix","speechkit")
+    endpoint=storage.get("endpoint","https://storage.yandexcloud.net")
+    key=f"{prefix.rstrip('/')}/{uuid.uuid4().hex}/{path.name}"
+    client=boto3.client("s3",endpoint_url=endpoint,
+        aws_access_key_id=access_key,aws_secret_access_key=secret_key)
+    client.upload_file(str(path),bucket,key)
     return f"{endpoint.rstrip('/')}/{bucket}/{key}"
 
 
@@ -391,36 +387,13 @@ def write_output(data: dict[str, Any], output: Path, fmt: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Yandex SpeechKit STT")
-    parser.add_argument("input", help="Audio file path")
-    parser.add_argument("--output", required=True, help="Output path")
-    parser.add_argument("--format", choices=["json", "txt", "srt", "vtt"], default="json")
-    parser.add_argument("--lang", default=DEFAULT_LANG)
-    parser.add_argument("--diarize", action="store_true")
-    parser.add_argument("--mode", choices=["auto", "direct", "async-s3"], default="auto")
-    return parser
+    from yandex_speech.cli import build_parser as parser
+    return parser()
 
 
 def main() -> int:
-    args = build_parser().parse_args()
-    source = Path(args.input)
-    if not source.exists():
-        print(f"Error: file not found: {source}", file=sys.stderr)
-        return 2
-    try:
-        transcriber = SpeechTranscriber()
-        if args.mode == "auto":
-            data = transcriber.transcribe_auto(source, language_code=args.lang, diarize=args.diarize)
-        elif args.mode == "direct":
-            data = transcriber.transcribe_direct(source, language_code=args.lang, diarize=args.diarize)
-        else:
-            data = transcriber.transcribe_async_s3(source, language_code=args.lang, diarize=args.diarize)
-        write_output(data, Path(args.output), args.format)
-        print(args.output)
-        return 0
-    except (SttError, requests.RequestException) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+    from yandex_speech.cli import transcribe_main
+    return transcribe_main()
 
 
 if __name__ == "__main__":
