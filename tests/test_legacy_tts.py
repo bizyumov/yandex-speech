@@ -39,6 +39,16 @@ class LegacyTtsTests(unittest.TestCase):
                 client.synthesize_bytes("hello",voice="filipp")
                 self.assertEqual(post.call_args.kwargs["data"]["voice"],"filipp")
 
+    def test_profile_adapter_voice_stays_below_user_file(self):
+        client=TextToSpeech(api_key="synthetic",_context=RuntimeContext(user_home=self.root),
+                            _adapter_defaults={"tts":{"default_voice":"filipp"}})
+        with patch("scripts.tts.requests.post") as post:
+            post.return_value.status_code=200
+            post.return_value.headers={"Content-Type":"audio/mpeg"}
+            post.return_value.content=b"audio"
+            client.synthesize_bytes("hello")
+            self.assertEqual(post.call_args.kwargs["data"]["voice"],"ermil")
+
     def test_errors_do_not_echo_provider_payload_or_key(self):
         with patch("scripts.tts.requests.post") as post:
             post.return_value.status_code=403

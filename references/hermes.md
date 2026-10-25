@@ -18,6 +18,16 @@ A same-name stt.providers.yandex entry with type: command takes precedence in He
 
 The host's tools.transcription_streaming.open_streaming_session consumes stt.streaming: true. That setting selects eligible provider streaming only on host surfaces which actually feed arriving audio. Complete attachment input remains recorded recognition. Full platform capture, turn controls, wake/stop words, interruption propagation and progressive reply/playback are Phase 4; native STT alone does not complete voice chatting.
 
+## Voice-reply route diagnosis
+
+First distinguish sending text, sending a voice message/attachment, and speaking in a connected voice channel. The standard `text_to_speech` tool creates audio; speaking requires the running host's voice-channel playback operation. For an ordinary voice-message/attachment request, start with the standard `text_to_speech` call. Do not require a standalone SpeechKit readiness probe before attempting that route. If the call fails, diagnose in this order:
+
+1. Retain the exact tool error and any reported backend; establish whether synthesis produced a complete audio artifact. Without audio, attachment upload and player rendering have not yet been tested.
+2. Inspect the active profile's allowlisted TTS selection and adapter fields, then the selected backend's dependencies in its actual execution context. A backend name in an error identifies the reported attempt, not the verified origin of configuration. A module import failure in a diagnostic interpreter does not establish that the gateway lacks the same module.
+3. Compare native-tool, configured-wrapper and standalone-provider results as separate evidence. Standalone synthesis success with a native-tool failure localizes a difference between routes; it does not by itself identify a missing registration, credential problem or configuration precedence bug. Likewise, receiving an inbound transcript is not proof of outbound TTS readiness or word-perfect recognition.
+4. Report observed failure, verified cause and unresolved questions separately. A generic setup suggestion in an error is not a diagnosis or authorization to install a different engine. For an explanation-only request, stop at the supported explanation; change configuration or packages only within authorized repair scope.
+5. After an authorized repair, repeat the exact native operation and verify synthesis, addressed attachment delivery and user playback separately. Do not close native acceptance using only a direct CLI sample.
+
 ## Command wrappers
 
 Keep positional contracts:
@@ -25,6 +35,25 @@ Keep positional contracts:
 - scripts/hermes-stt-wrapper.sh {input_path} {output_dir} {language} writes output_dir/transcript.txt. The exact addressed input is processed; no unrelated cache file is substituted. The host language remains an adapter default.
 - scripts/hermes-tts-wrapper.sh {input_path} {output_path} reads UTF-8 text and writes service oggopus (host file type ogg). HERMES_TTS_VOICE and HERMES_TTS_LANG are adapter defaults below the workspace user file.
 
-Wrappers resolve their own location and PATH-selected python3. The gateway PATH must select the standard Hermes venv. Keep scripts executable. Pass YANDEX_SPEECH_API_KEY through the host's existing secret-name mechanism; never embed it in commands. Hermes command-TTS removes its allocated output before invoking the wrapper, so ordinary no-clobber output is compatible. A synthesized voice-compatible file does not override opt-outs, recipient restrictions or delivery permissions.
+The STT wrapper keeps CLI output-path/status text on stderr. Hermes falls back to stdout when its transcript file is empty, so a pathname on stdout would become false user input during silence. For the command-provider contract, empty output is unsuccessful and the Discord voice receiver drops it; it must never be turned into a pathname message.
+
+Wrappers resolve their own location and plain python from the gateway-configured VIRTUAL_ENV/PATH. Never prepend an interpreter path. Keep scripts executable. Pass YANDEX_SPEECH_API_KEY through the host's existing secret-name mechanism; never embed it in commands. Hermes command-TTS removes its allocated output before invoking the wrapper, so ordinary no-clobber output is compatible. A synthesized voice-compatible file does not override opt-outs, recipient restrictions or delivery permissions.
 
 [Hermes STT SPI](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/transcription_provider.py) · [Host stream consumer](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/tools/transcription_streaming.py) · [Host command TTS](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/tools/tts_command_provider.py).
+
+
+## Sending text, sending voice and speaking
+
+These are separate requested outcomes:
+
+| Requested action | Success means | Hermes route |
+|---|---|---|
+| Send text | Text reaches the addressed chat. | Normal text delivery. |
+| Send voice | A voice message or audio attachment reaches the chat. | Synthesis followed by the host's voice-message delivery. |
+| Speak in the voice channel | Audio is played in the addressed, already-connected voice channel. | The running gateway's voice-channel playback path. |
+
+The standard `text_to_speech` tool produces audio. Its `voice_compatible` result does not select a connected voice channel. A `MEDIA:` attachment, native voice message, or incoming transcript echo does not prove speaking.
+
+In Hermes v0.22.5, ordinary automatic speech can use Discord's `play_tts` and its active text-to-voice-channel binding. The queued-first-final path sends text/explicit attachments without that automatic speech step. The runner's separate voice-reply path falls back to an attachment if its raw event lacks server data, even when the session source contains the server identifier. These differences are tracked in [issue #4](https://github.com/bizyumov/yandex-speech/issues/4); do not claim that `/voice all`, a successful file synthesis, or identical final-answer wording repairs them.
+
+For an explicit request to speak, use an available host operation that targets the connected voice channel and verify its playback result. An attachment is a failed speaking attempt. Do not turn one successful plain final into a rule that all final answers speak. A newly constructed runner/adapter in a terminal or execute-code subprocess does not hold the running gateway's connected voice client and cannot be used as that playback operation.

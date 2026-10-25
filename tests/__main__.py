@@ -17,11 +17,16 @@ ROOT=Path(__file__).resolve().parent.parent
 REQUIRED={f"AC{i:02d}" for i in range(1,21)}
 
 
-def read_manifest(path):
+def read_manifest(path, phase=1):
     document=json.loads(Path(path).read_text())
+    if phase not in {1,3}:
+        raise ValueError("unsupported acceptance phase")
+    if phase != 1:
+        document=document.get("phases",{}).get(str(phase),{})
     records=document.get("acceptance",{})
-    if document.get("schema_version") != 1 or document.get("phase") != 1 or set(records) != REQUIRED:
-        raise ValueError("Phase 1 must map exactly AC01 through AC20")
+    required=REQUIRED if phase == 1 else {f"AC{i:02d}" for i in range(29,37)}
+    if document.get("schema_version") != 1 or document.get("phase") != phase or set(records) != required:
+        raise ValueError(f"Phase {phase} must map every declared acceptance criterion")
     for record in records.values():
         if not record.get("offline"):
             raise ValueError("each acceptance requires nonempty executable offline evidence")
@@ -92,9 +97,15 @@ def _version(package):
         return None
 
 
+def validate_runtime():
+    configured = os.environ.get("VIRTUAL_ENV")
+    if (not configured or not Path(configured).is_absolute()
+            or Path(sys.prefix).resolve() != Path(configured).resolve()):
+        raise ValueError("Use plain python in the configured Hermes VIRTUAL_ENV/PATH; private environments are not supported")
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase",type=int,choices=[1],required=True)
+    parser.add_argument("--phase",type=int,choices=[1,3],required=True)
     parser.add_argument("--profile",choices=["base","grpc","storage"],default="grpc")
     parser.add_argument("--provider",action="store_true")
     parser.add_argument("--host",action="store_true")
@@ -104,18 +115,20 @@ def main(argv=None):
         parser.error("--host requires --provider and explicit synthetic credentials/fixtures")
     if args.provider and args.profile != "grpc":
         parser.error("full provider/host acceptance uses the grpc profile")
-    if Path(sys.prefix) != Path("/opt/hermes/venv"):
-        parser.error("all acceptance must run against /opt/hermes/venv/bin/python")
+    try:
+        validate_runtime()
+    except ValueError as error:
+        parser.error(str(error))
     os.environ["YANDEX_SPEECH_TEST_PROFILE"]=args.profile
     # Flags grant this test process permission to call providers; ordinary CI cannot
     # inherit a live opt-in accidentally.
     os.environ["YANDEX_SPEECH_LIVE_TESTS"]="1" if args.provider else "0"
     os.environ["YANDEX_SPEECH_HOST_TESTS"]="1" if args.host else "0"
     try:
-        manifest=read_manifest(ROOT/"tests/acceptance.json")
+        manifest=read_manifest(ROOT/"tests/acceptance.json",phase=args.phase)
         coverage={}
         omitted={"test_grpc_file","test_job_recovery","test_lifecycle","test_stream_api",
-                     "test_streaming","test_timeline","test_hermes"} if args.profile != "grpc" else set()
+                     "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream"} if args.profile != "grpc" else set()
         for ac,record in manifest["acceptance"].items():
             coverage[ac]={}
             for level,selectors in record.items():
@@ -125,7 +138,7 @@ def main(argv=None):
         modules=[f"tests.{p.stem}" for p in sorted((ROOT/"tests").glob("test_*.py"))]
         if args.profile != "grpc":
             omitted={"test_grpc_file","test_job_recovery","test_lifecycle","test_stream_api",
-                     "test_streaming","test_timeline","test_hermes"}
+                     "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream"}
             modules=[name for name in modules if name.rsplit(".",1)[-1] not in omitted]
         cases=selected_tests(modules)
         for record in manifest["acceptance"].values():
@@ -149,7 +162,7 @@ def main(argv=None):
             statuses[ac]="failed"
         else:
             statuses[ac]="pending-required-evidence"
-    record={"schema_version":1,"phase":1,"profile":args.profile,
+    record={"schema_version":1,"phase":args.phase,"profile":args.profile,
         "revision":revision.stdout.strip(),"tracked_state_dirty":bool(dirty.stdout.strip()),
         "interpreter":sys.executable,"python":platform.python_version(),
         "hermes":{"revision":subprocess.run(["git","-C","/opt/hermes/src","rev-parse","HEAD"],capture_output=True,text=True).stdout.strip(),
@@ -159,7 +172,7 @@ def main(argv=None):
         "provider_opt_in":args.provider,"host_opt_in":args.host,
         "elapsed_seconds":time.monotonic()-started,"test_count":result.testsRun,
         "outcomes":result.outcomes,"acceptance":statuses}
-    destination=args.evidence or ROOT/".agent/tasks/public-release/testing-evidence"/("phase1-"+uuid.uuid4().hex+".json")
+    destination=args.evidence or ROOT/".agent/tasks/public-release/testing-evidence"/(f"phase{args.phase}-"+uuid.uuid4().hex+".json")
     destination.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
     try:
         with destination.open("x",encoding="utf-8") as stream:
@@ -169,12 +182,12 @@ def main(argv=None):
         print("Cannot create fresh evidence artifact; existing evidence is preserved",file=sys.stderr)
         return 1
     passed=sum(s == "passed" for s in statuses.values())
-    print(f"{result.testsRun} tests; {passed}/20 acceptance criteria complete; evidence: {destination}")
+    print(f"{result.testsRun} tests; {passed}/{len(statuses)} acceptance criteria complete; evidence: {destination}")
     if not args.provider or not args.host:
         print("Required provider/host evidence remains pending for this offline/profile run.")
     if not result.wasSuccessful():
         return 1
-    return 0 if not(args.provider and args.host) or passed == 20 else 1
+    return 0 if not(args.provider and args.host) or passed == len(statuses) else 1
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ An agent skill for Yandex SpeechKit. This branch implements development Phase 1:
 | User scenario | Capability used | Implemented baseline |
 |---|---|---|
 | push-to-talk messaging | speech-transcription; spoken-turn-handling | Recorded attachment recognition and native STT binding. Complete addressed conversation integration is Phase 4. |
-| receive voice reply | speech-synthesis; spoken-turn-handling | Existing REST v1 synthesis and command wrapper. New synthesis/streaming and complete playback integration are Phases 3–4. |
+| receive voice reply | speech-synthesis; spoken-turn-handling | Current worktree adds v1/v3 complete files, LiveTTS, SSML and incremental gRPC PCM. Standard Hermes tool binding is exercised; complete playback integration remains separate. |
 | transcribing audio records | speech-transcription | gRPC v3 recording jobs, recovery, any locally decodable media, genuine timing, two anonymous speakers, TXT/JSON/SRT/VTT. |
 | voice chatting | speech-transcription; speech-synthesis; spoken-turn-handling | Recognition while audio arrives and native Hermes STT. Complete capture → agent → progressive reply → playback is Phase 4. |
 
@@ -32,13 +32,13 @@ An agent skill for Yandex SpeechKit. This branch implements development Phase 1:
 
 Keep the checkout in the platform's configured skills directory so its root SKILL.md is discovered. Set `YANDEX_SPEECH_API_KEY` through the runtime's secret mechanism. The key belongs to a service account; a folder ID is optional legacy configuration and is not sent with these calls.
 
-Development, execution and tests use the standard Hermes interpreter, `/opt/hermes/venv/bin/python`. Have the runtime administrator admit the dependencies declared by `requirements.txt` and optional `requirements-grpc.txt` into that environment; do not create a project venv. The skill never installs dependencies implicitly. FFmpeg and ffprobe are required for media probing/conversion; native described PCM streams need neither.
+Inside Hermes, development, execution and tests use plain `python` from the configured `VIRTUAL_ENV` and `PATH`. Never hardcode or prepend a venv path. Have the runtime administrator admit the dependencies declared by `requirements.txt` and optional `requirements-grpc.txt` into that environment; do not create a project venv. The skill never installs dependencies implicitly. FFmpeg and ffprobe are required for media probing/conversion; native described PCM streams need neither.
 
 ```bash
-/opt/hermes/venv/bin/python /absolute/skill/scripts/speech_setup.py --check
-/opt/hermes/venv/bin/python /absolute/skill/scripts/transcribe.py ./meeting.mp3 --mode async --diarize --timestamps --format srt --output ./out/meeting.srt
-/opt/hermes/venv/bin/python /absolute/skill/scripts/transcribe.py --resume ./out/meeting.job.json --format json --output ./out/meeting.json
-/opt/hermes/venv/bin/python /absolute/skill/scripts/tts.py "Привет, мир" --format oggopus --output ./out/reply.ogg
+python /absolute/skill/scripts/speech_setup.py --check
+python /absolute/skill/scripts/transcribe.py ./meeting.mp3 --mode async --diarize --timestamps --format srt --output ./out/meeting.srt
+python /absolute/skill/scripts/transcribe.py --resume ./out/meeting.job.json --format json --output ./out/meeting.json
+python /absolute/skill/scripts/tts.py "Привет, мир" --format oggopus --output ./out/reply.ogg
 ```
 
 Replace `/absolute/skill` with the installed skill root. Commands work outside the checkout. Output replacement requires `--overwrite`; source files remain protected. The default recovery pointer is `<output-stem>.job.json`; it points to private durable state and is sufficient for `--resume`.
@@ -58,9 +58,9 @@ The intended recording fallback chain is **gRPC v3 → REST v3 + Object Storage 
 [Hermes native STT and command wrappers](references/hermes.md); [credential/readiness procedure](references/yandex-cloud-setup.md). No productive profile is changed by import, tests or installation.
 
 ```bash
-/opt/hermes/venv/bin/python -m tests --phase 1
-/opt/hermes/venv/bin/python -m tests --phase 1 --provider --host
-/opt/hermes/venv/bin/python -m build --no-isolation
+python -m tests --phase 3 --profile grpc
+python -m tests --phase 1
+python -m build --no-isolation
 ```
 
-Run verification from the checkout. Provider/host acceptance requires explicit synthetic fixtures and authorized credentials; ordinary CI makes no provider calls. See [acceptance coverage](tests/acceptance.json). Later phases deliver the full REST/storage fallback, account/key creation, v1/v3 synthesis and SSML, complete spoken-turn controls/playback, and public rollout. [Changelog](CHANGELOG.md), [MIT license](LICENSE).
+Run verification from the checkout. Provider/host acceptance requires explicit synthetic fixtures and authorized credentials; ordinary CI makes no provider calls. See [acceptance coverage](tests/acceptance.json). Synthesis supports REST v1/v3 files, gRPC v3 files and incremental PCM, v1 SSML, explicit LiveTTS and complete multipart output; see [synthesis commands and controls](references/synthesis-provider-testing.md). Later scope includes full REST/storage recognition fallback, account/key creation, complete spoken-turn controls/playback and public rollout. [Changelog](CHANGELOG.md), [MIT license](LICENSE).
