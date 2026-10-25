@@ -5,7 +5,7 @@
 | Route | Status in Phase 1 | Requirements and trade-offs |
 |---|---|---|
 | gRPC v3 RecognizeFile → operation polling → GetRecognition | Implemented; default recording route | Optional yandexcloud/grpcio/grpcio-tools, requests base, SpeechKit execution permission. Timing and native two-speaker mixed recording labels. Binary inline content or caller-provided supported storage URI. |
-| gRPC v3 RecognizeStreaming | Implemented | Recognition while audio arrives; ordered prepared PCM, previews, external EOU, complete response drain. No mixed-recording diarization/subtitle output. |
+| gRPC v3 RecognizeStreaming | Implemented for one bounded utterance | Recognition while audio arrives; ordered prepared PCM, previews, external EOU, complete response drain. No mixed-recording diarization/subtitle output. |
 | REST v1 direct / legacy 25-second split | Preserved explicit entries | No gRPC/S3. Text-only raw output; no genuine timing or speaker labels, no literary-style guarantee. Corrected 30-second/five-second-overlap assembly is Phase 2. |
 | REST v2 async-s3 | Preserved explicit compatibility | requests+boto3 and authorized object access. Existing v2 response handling, not v3 streaming/results. New durable recovery/storage helpers are Phase 2. |
 | REST v3 + S3 or eligible inline; complete fallback chain | Phase 2 | Whole-file v3 metadata without optional gRPC dependencies; upload/polling/access setup. |
@@ -69,3 +69,32 @@ Finalization stops accepting source bytes, closes/drains source input, successfu
 ## Exit categories
 
 0 success/no-speech; 2 CLI/config; 3 prerequisites/audio/limit; 4 authentication/permission; 5 provider/transport/retry exhaustion; 6 deadline; 7 incomplete/uncertain output; 130 cancellation. Progress/receipt paths go to stderr; successful output paths go to stdout. Keep receipts after cancellation: local cancellation does not establish server-side job cancellation or authorize rebilling.
+
+
+## Required continuous server streaming
+
+Long meetings and monologues require a continuous transcription lifecycle.
+The existing 240-second utterance interface is not that lifecycle.
+
+SpeechKit provides a managed bidirectional gRPC RecognizeStreaming service.
+Its published per-connection limits are five minutes of audio, 10 MB and one
+channel; it can terminate after five seconds without recognition messages.
+Continuous capture must renew connections while preserving transcript/source
+continuity, handle silence and recovery, and retain the final tail. The
+60 MB unary file-request budget is a separate constraint.
+
+The installed SDK includes REAL_TIME/FULL_DATA and server/default or external
+EOU options. Evaluate their actual service behavior and define one EOU owner;
+a segment-final event must not silently end a meeting. Preserve genuine
+timing/speaker information without inventing cross-connection identities.
+
+[Issue #37](https://github.com/bizyumov/yandex-speech/issues/37) specifies the
+required investigation, native Hermes source wiring, long-session behavior
+and release evidence. [Release #26](https://github.com/bizyumov/yandex-speech/issues/26)
+depends on it. A short stream, a provider registration or stt.streaming=true
+does not verify that audio is being streamed from the actual source.
+Recorded files retain the appropriate asynchronous/native-container route.
+
+[Streaming contract](https://aistudio.yandex.ru/en/docs/speechkit/stt/streaming) ·
+[v3 request/events](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/grpc/Recognizer/recognizeStreaming) ·
+[Service limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits).

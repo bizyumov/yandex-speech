@@ -47,6 +47,19 @@ See [synthesis provider testing](references/synthesis-provider-testing.md) for L
 
 For a requested developer handoff, read the existing synthesis issue/specification and map the observed tests against its acceptance criteria. Mark untested work explicitly; do not close an implementation criterion from a few provider samples. Store session working documents in the existing project folder of the agent workspace, not the installed/shared skill repository, unless product-repository publication was explicitly requested. Publishing an issue comment does not authorize staging the local report in the product repository. Sanitize public comments separately, excluding local paths, private session/account/request identifiers and operational payloads. Read back the exact published issue/comment before reporting success. A registration-only or deferred issue request does not authorize implementation or live configuration changes.
 
+## Long meetings and monologues
+
+Native server streaming is a required pre-release STT capability tracked in
+[#37](https://github.com/bizyumov/yandex-speech/issues/37). The current
+240-second stream handles one bounded utterance; do not advertise it as a
+complete continuous meeting recorder. Source audio must reach the native
+provider while captured, with correct finalization, connection renewal,
+recovery and transcript continuity. Use the
+[recording/streaming guide](references/transcription.md#required-continuous-server-streaming)
+to distinguish this from recorded-file recognition. Investigated settings,
+existing short-stream tests and actual long-session support are different
+evidence; do not change unrelated busy-message or notification options.
+
 ## Commands
 
 Use the installed skill root in place of `/absolute/skill`. Inside Hermes, use plain `python`; its configured `VIRTUAL_ENV` and `PATH` already select the standard runtime. Never hardcode or prepend an interpreter path. Development and tests use this same configured environment, never a private/project venv.
