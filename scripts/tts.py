@@ -204,7 +204,6 @@ class TextToSpeech:
             raise
 
     def stream_audio(self,text_or_fragments,*,deadline_seconds=1800,**kwargs):
-        from google.protobuf.json_format import ParseDict
         from yandex_speech.tts_v3 import grpc_sdk,request_body
         from yandex_speech.tts_stream import AudioStream,GrpcStreamingTransport
         settings,options,version=self._options(**kwargs)
@@ -221,6 +220,7 @@ class TextToSpeech:
         if options.get("unsafe_mode") or options.get("duration_ms",0):
             raise SpeechError("CONFIG","unsafe/duration utterance controls do not apply to StreamSynthesis")
         _,p,_=grpc_sdk()
+        from google.protobuf.json_format import ParseDict
         native=dict(options,default_format="lpcm",sample_rate_hertz=24000)
         body=request_body("stream options",native,sources=settings.sources)
         configuration={"model":body["model"],"outputAudioSpec":body["outputAudioSpec"]}

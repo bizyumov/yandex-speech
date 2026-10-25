@@ -73,3 +73,23 @@ class SynthesisBoundaryTests(unittest.TestCase):
                 with self.subTest(options=options),self.assertRaises(SpeechError):
                     self.client.synthesize_bytes("Тест.",**options)
             post.assert_not_called()
+
+    def test_stream_dependency_absence_has_a_project_error_after_option_validation(self):
+        import builtins
+        original_import = builtins.__import__
+
+        def without_sdk(name, *args, **kwargs):
+            if name.split(".")[0] in {"google", "grpc", "yandex"}:
+                raise ModuleNotFoundError("optional SDK unavailable", name=name)
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=without_sdk):
+            for options, category in [
+                ({}, "PREREQUISITE"),
+                ({"api_version": "1"}, "CONFIG"),
+                ({"transport": "rest"}, "CONFIG"),
+            ]:
+                with self.subTest(options=options):
+                    with self.assertRaises(SpeechError) as failure:
+                        self.client.stream_audio("Тест.", voice="sergey", model="livetts", **options)
+                    self.assertEqual(failure.exception.category, category)
