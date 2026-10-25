@@ -46,6 +46,49 @@ class MediaTests(unittest.TestCase):
                     self.assertTrue(audio.source_info["converted"])
                 self.assertTrue(path.exists())
 
+    def test_amr_and_selected_video_audio_track_are_decoded(self):
+        amr=self.root/"input.amr"
+        amr.write_bytes(b"#!AMR\n"+(b"\x04"+b"\0"*12)*20)
+        with prepare_audio(amr) as audio:
+            self.assertEqual(audio.container,"WAV")
+            self.assertEqual(audio.sample_rate_hertz,16000)
+            self.assertGreater(audio.duration_ms,300)
+        first=make_wave(self.root/"first.wav",rate=8000)
+        second=make_wave(self.root/"second.wav",rate=48000)
+        video=self.root/"tracks.mkv"
+        subprocess.run(["ffmpeg","-nostdin","-v","error","-f","lavfi","-i",
+            "color=size=16x16:rate=10:duration=0.1","-i",str(first),"-i",str(second),
+            "-map","0:v","-map","1:a","-map","2:a","-c:v","ffv1","-c:a","pcm_s16le",str(video)],
+            check=True)
+        with prepare_audio(video,audio_track=1) as audio:
+            self.assertEqual(audio.source_info["original"]["track"],1)
+            self.assertEqual(audio.source_info["original"]["sample_rate_hertz"],48000)
+            self.assertEqual(audio.channels,1)
+        with self.assertRaises(SpeechError):
+            with prepare_audio(video,audio_track=2):
+                pass
+
+    def test_decodable_pcm_at_unsupported_rate_is_converted(self):
+        source=make_wave(self.root/"mono44100.wav",rate=44100)
+        with prepare_audio(source) as audio:
+            self.assertTrue(audio.source_info["converted"])
+            self.assertEqual(audio.sample_rate_hertz,16000)
+
+    def test_preparation_does_not_outlive_its_whole_deadline(self):
+        import time
+        import yandex_speech.media as media
+        source=make_wave(self.root/"deadline.wav")
+        original=media._probe
+        def delayed(*args,**kwargs):
+            value=original(*args,**kwargs)
+            time.sleep(.02)
+            return value
+        with patch.object(media,"_probe",side_effect=delayed):
+            with self.assertRaises(SpeechError) as cm:
+                with prepare_audio(source,timeout=.001):
+                    pass
+        self.assertEqual(cm.exception.category,"TIMEOUT")
+
     def test_raw_source_metadata_alignment_and_no_fake_wav_header(self):
         path = self.root / "source.pcm"
         path.write_bytes(b"\0\0" * 1600)

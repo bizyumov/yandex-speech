@@ -8,6 +8,7 @@ import math
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,19 +71,21 @@ def _run(command: list[str], *, timeout: float = 120) -> bytes:
     return result.stdout
 
 
-def _digest(path: Path) -> str:
+def _digest(path: Path, *, deadline=None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise SpeechError("TIMEOUT", "audio preparation deadline expired")
             digest.update(block)
     return digest.hexdigest()
 
 
-def _probe(path: Path, track: int | None) -> tuple[dict, float]:
+def _probe(path: Path, track: int | None, *, timeout=120) -> tuple[dict, float]:
     if track is not None and (type(track) is not int or track < 0):
         raise SpeechError("CONFIG", "audio track must be a nonnegative audio-stream index")
     raw = _run([_tool("ffprobe"), "-v", "error", "-show_streams", "-show_format",
-                "-of", "json", str(path)])
+                "-of", "json", str(path)], timeout=timeout)
     try:
         data = json.loads(raw)
         streams = [s for s in data.get("streams", []) if s.get("codec_type") == "audio"]
@@ -112,6 +115,14 @@ def _probe(path: Path, track: int | None) -> tuple[dict, float]:
 @contextlib.contextmanager
 def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
                   audio_track: int | None = None, timeout: float = 120):
+    if type(timeout) not in (int,float) or not math.isfinite(timeout) or timeout <= 0:
+        raise SpeechError("CONFIG", "audio preparation timeout must be positive and finite")
+    deadline=time.monotonic()+timeout
+    def remaining():
+        left=deadline-time.monotonic()
+        if left <= 0:
+            raise SpeechError("TIMEOUT", "audio preparation deadline expired")
+        return left
     path = Path(source).expanduser().absolute()
     if not path.is_file():
         raise SpeechError("UNSUPPORTED_AUDIO", "the addressed audio source is not a readable file")
@@ -130,23 +141,24 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
         duration_ms = size / (width * channels * rate) * 1000
         raw_args = ["-f", fmt, "-ar", str(rate), "-ac", str(channels)]
     else:
-        original, duration_ms = _probe(path, audio_track)
+        original, duration_ms = _probe(path, audio_track, timeout=remaining())
         rate, channels = original["sample_rate_hertz"], original["channels"]
     original["duration_ms"] = duration_ms
-    info = {"original_path": str(path), "source_sha256": _digest(path),
+    info = {"original_path": str(path), "source_sha256": _digest(path, deadline=deadline),
             "duration_ms": duration_ms, "original_size_bytes": path.stat().st_size,
             "original": original, "metadata_origin": "local_probe",
             "timeline_offset_seconds": max(0.0, original["start_time_seconds"])}
     container = None
     if channels == 1 and original["track"] == 0 and original["start_time_seconds"] == 0:
-        if spec.source_format == "lpcm" and original["codec"] == "s16le":
+        if spec.source_format == "lpcm" and original["codec"] == "s16le" and rate in {8000,16000,48000}:
             container = "LPCM"
-        elif original["codec"] == "pcm_s16le" and "wav" in original["format"].split(","):
+        elif original["codec"] == "pcm_s16le" and "wav" in original["format"].split(",") and rate in {8000,16000,48000}:
             container = "WAV"
         elif original["codec"] == "opus" and "ogg" in original["format"].split(","):
             container = "OGG_OPUS"
         elif original["codec"] == "mp3" and "mp3" in original["format"].split(","):
             container = "MP3"
+    remaining()
     if container:
         info.update({"converted": False, "size_bytes": path.stat().st_size,
                      "prepared": {"container": container, "sample_rate_hertz": rate, "channels": 1}})
@@ -156,8 +168,9 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
         prepared = Path(directory) / "prepared.wav"
         _run([_tool("ffmpeg"), "-nostdin", "-loglevel", "error", "-xerror", "-y",
               *raw_args, "-i", str(path), "-map", f"0:a:{original['track']}", "-vn",
-              "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(prepared)], timeout=timeout)
-        converted, actual_ms = _probe(prepared, 0)
+              "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(prepared)], timeout=remaining())
+        converted, actual_ms = _probe(prepared, 0, timeout=remaining())
+        remaining()
         info.update({"converted": True, "duration_ms": actual_ms,
                      "size_bytes": prepared.stat().st_size,
                      "prepared": {"container": "WAV", "sample_rate_hertz": 16000, "channels": 1}})

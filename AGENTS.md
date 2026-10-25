@@ -1,0 +1,19 @@
+# Yandex Speech development instructions
+
+## Source-code tools
+
+Serena MCP is MANDATORY for source-code reads and writes. Inspect its full method catalogue; use semantic lookup/reference methods and the appropriate source-edit methods. Do not bypass Serena with shell/Python source reads/writes, apply_patch or bulk source dumps. If a required tool is unavailable, reconcile managed tool availability before source editing.
+
+Markdown is NOT source code. Use ordinary file tools for Markdown. Builds, tests and Git commands may run through shell tools.
+
+## Required development runtime
+
+ALL skill development, execution and tests MUST use the standard Hermes environment: `/opt/hermes/venv/bin/python`. Project-local `.venv/bin/python` and other private development venvs are PROHIBITED. Do not create or install into an isolated project venv. Verify compatibility against the real standard Hermes runtime and its existing dependency constraints.
+
+## Delivery workflow
+
+GitHub Issues holds complete specifications, numbered acceptance criteria and dependencies. Group the current phase into a software increment, implement and test it, open a PR, resolve review findings and merge only when required checks pass. Preserve root SKILL.md as the skill entry and existing user interfaces. Keep private task intelligence and credentials out of published content.
+
+## Markdown search and complete document indexing
+
+Markdown MUST use GitMark indexing/search before locating or reading project documents. Index ALL project Markdown regardless of .gitignore, including ignored task specifications and instructions. Run `GITMARK_NO_GIT=1 gitmark --root /opt/skills/yandex-speech index`, then `gitmark --root /opt/skills/yandex-speech search "query"`; open only the relevant returned documents. Verify ignored documents are searchable. Reindex after Markdown edits and commits. Keep .gitmark derived/ignored and private task material unpublished. Markdown may be edited with ordinary file tools; Serena is mandatory for source code.

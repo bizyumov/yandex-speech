@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yandex-speech"
+dynamic = ["version"]
+description = "Agent skill for Yandex SpeechKit transcription and synthesis"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.33.0,<3"]
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Boris Izyumov"}]
+
+[project.optional-dependencies]
+grpc = ["yandexcloud==0.412.0", "grpcio==1.84.1", "grpcio-tools==1.76.0"]
+storage = ["boto3==1.42.89"]
+
+[project.scripts]
+yandex-speech-transcribe = "yandex_speech.cli:transcribe_main"
+yandex-speech-check = "yandex_speech.readiness:main"
+
+[tool.setuptools.dynamic]
+version = {file = ["VERSION"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["yandex_speech*", "scripts*", "integrations*"]
+exclude = ["tests*"]
+
+[tool.setuptools.data-files]
+"share/yandex-speech" = ["SKILL.md", "README.md", "VERSION", "CHANGELOG.md", "LICENSE"]
+"share/yandex-speech/scripts" = ["scripts/transcribe.py", "scripts/tts.py", "scripts/hermes-stt-wrapper.sh", "scripts/hermes-tts-wrapper.sh", "scripts/speech_setup.py"]
+"share/yandex-speech/integrations/hermes" = ["integrations/hermes/__init__.py", "integrations/hermes/provider.py", "integrations/hermes/plugin.yaml"]
+"share/yandex-speech/tests" = ["tests/acceptance.json"]
+"share/yandex-speech/references" = ["references/transcription.md", "references/media-preparation.md", "references/yandex-cloud-setup.md", "references/hermes.md"]

@@ -45,6 +45,24 @@ class ReadinessTests(unittest.TestCase):
                             _probe=lambda: {"input_complete":True})
         self.assertEqual(report["permissions"]["status"], "execution-verified")
 
+    def test_transcription_probe_does_not_certify_synthesis_permission(self):
+        report=self.check(_environment={"YANDEX_SPEECH_API_KEY":"synthetic"},
+                          _probe=lambda:{"input_complete":True})
+        self.assertEqual(report["permissions"]["verified_operation"],"speech-transcription")
+        self.assertEqual(report["permissions"]["tts_execution_status"],"unverified")
+
+    def test_selected_version_one_reports_rest_not_grpc_as_effective_route(self):
+        from yandex_speech.readiness import check
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            path=root/".config/yandex-speech/config.json"
+            path.parent.mkdir(parents=True)
+            path.write_text('{"speech":{"api_version":"1"}}')
+            report=check(_context=RuntimeContext(user_home=root),_environment={})
+        self.assertEqual(report["effective_route"]["api_version"],"1")
+        self.assertEqual(report["effective_route"]["transport"],"rest")
+        self.assertTrue(report["effective_route"]["available"])
+
     def test_helper_runs_outside_project_without_key(self):
         script = Path("scripts/speech_setup.py").resolve()
         with tempfile.TemporaryDirectory() as home:

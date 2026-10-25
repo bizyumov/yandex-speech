@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import tempfile
+import subprocess
+import sys
 import unittest
 import uuid
 from pathlib import Path
@@ -53,6 +55,13 @@ class LiveRecordingTests(unittest.TestCase):
             write_output(result, output, fmt)
             self.assertGreater(output.stat().st_size, 0)
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), original)
+        recovered_output=self.root/"external-recovered.txt"
+        command=Path(__file__).resolve().parents[2]/"scripts/transcribe.py"
+        external=subprocess.run([sys.executable,str(command),"--resume",str(job.manifest_path),
+            "--format","txt","--output",str(recovered_output)],cwd=self.root,
+            env={"HOME":str(self.root),"PATH":os.environ["PATH"]},capture_output=True,text=True)
+        self.assertEqual(external.returncode,0,external.stderr)
+        self.assertIn("контрольный хвост",recovered_output.read_text().casefold())
         (self.root / "acceptance.json").write_text(json.dumps({
             "case": self.id(), "result": "passed", "operation_id": job.operation_id,
             "job_manifest": str(job.manifest_path), "api_version": result["api_version"],

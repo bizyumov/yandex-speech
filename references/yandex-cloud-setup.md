@@ -1,0 +1,15 @@
+# Agent-led readiness and permissions
+
+The agent runs scripts/speech_setup.py --check with the standard Hermes interpreter before diagnosing configuration. This is a non-mutating local check: it reports the selected non-secret config path, setting provenance, optional dependencies and credential presence. A key's presence is labeled present-unverified; IAM permissions remain unverified until actual execution or authorized IAM inspection provides evidence. Exit 0 means local prerequisites for the selected Phase 1 route are present; it does not certify grants.
+
+A service-account API key is read at runtime from YANDEX_SPEECH_API_KEY or the scoped host secret resolver. Do not ask for it in public chat or place it on argv/in config JSON. `folder_id` and YANDEX_CLOUD_FOLDER_ID remain optional legacy fields; API-Key calls do not send folderId/x-folder-id. Standalone code never auto-loads an arbitrary .env file.
+
+For transcription, verify the service account's applicable ai.speechkit-stt.user role and the API key execution scope yc.ai.speechkitStt.execute. For synthesis, verify ai.speechkit-tts.user and yc.ai.speechkitTts.execute. Verify the selected folder/resource and account/key validity. A 401 indicates authentication rejection; a 403 indicates denial, not proof of exactly which role/scope is missing. If IAM inventory is unavailable, say execution permission is unverified and give the owner the precise checks. Do not cycle API transports to repair auth.
+
+With explicit permission for usage, scripts/speech_setup.py --check --probe-audio ./synthetic.wav makes a real recognition request and reports execution evidence. It incurs provider usage. Use synthetic input; do not automatically upload operational conversations for diagnostics. Failure reports omit provider payloads/credential values.
+
+If the user supplies a service account and authorizes setup, identify its owner, cloud/folder, billing state and required grants/key scopes; preserve existing keys and ask only for genuinely missing authority or identity. Key creation and storage commissioning helpers are Phase 2. Phase 1 checks/advises; it does not create or rotate keys, change IAM grants, create buckets, make objects public or install dependencies automatically.
+
+For legacy Object Storage uploads, SpeechKit needs read access to the selected object, while the upload principal separately needs bucket write permission. Configure an existing private authorized bucket using speech.object_storage or YANDEX_SPEECH_S3_BUCKET, plus runtime YANDEX_SPEECH_AWS_ACCESS_KEY_ID and YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY. Endpoint/prefix have existing aliases. Missing storage configuration does not block gRPC inline recognition. Object retention/cleanup must follow the resource owner's policy; no bucket/prefix sweep.
+
+[Authentication](https://aistudio.yandex.ru/en/docs/speechkit/concepts/auth) · [Service-account API keys](https://yandex.cloud/en/docs/iam/operations/authentication/manage-api-keys) · [STT access](https://aistudio.yandex.ru/en/docs/speechkit/security/) · [Object Storage prerequisites](https://aistudio.yandex.ru/en/docs/speechkit/stt/api/transcribation-api).

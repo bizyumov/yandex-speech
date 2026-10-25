@@ -14,6 +14,13 @@ from typing import Iterable
 
 import requests
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from yandex_speech.config import RuntimeContext, resolve_settings
+from yandex_speech.errors import SpeechError
+from yandex_speech.artifacts import atomic_write
+
 API_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
 DEFAULT_LANG = "ru-RU"
 DEFAULT_VOICE = "alena"
@@ -27,86 +34,89 @@ class TtsError(RuntimeError):
 
 
 class TextToSpeech:
-    def __init__(self, api_key: str | None = None, folder_id: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, folder_id: str | None = None,
+                 *, _context=None, _adapter_defaults=None) -> None:
         self.api_key = api_key or os.getenv("YANDEX_SPEECH_API_KEY")
         self.folder_id = folder_id or os.getenv("YANDEX_CLOUD_FOLDER_ID")
+        self.context = _context
+        self.adapter_defaults = _adapter_defaults or {}
+        self.settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults)
         if not self.api_key:
             raise TtsError("YANDEX_SPEECH_API_KEY is required")
-        if not self.folder_id:
-            raise TtsError("YANDEX_CLOUD_FOLDER_ID is required")
 
-    def synthesize_bytes(
-        self,
-        text: str,
-        *,
-        lang: str = DEFAULT_LANG,
-        voice: str = DEFAULT_VOICE,
-        fmt: str = DEFAULT_FORMAT,
-        speed: float = 1.0,
-        emotion: str = "neutral",
-    ) -> bytes:
-        if not 0.5 <= speed <= 3.0:
-            raise TtsError("speed must be between 0.5 and 3.0")
-
-        last_error: str | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+    def synthesize_bytes(self, text: str, *, lang=None, voice=None, fmt=None,
+                         speed=None, emotion=None, format=None) -> bytes:
+        if format is not None and fmt is not None and format != fmt:
+            raise TtsError("conflicting fmt/format options")
+        values = {key:value for key,value in [
+            ("default_lang",lang),("default_voice",voice),
+            ("default_format",format if format is not None else fmt),
+            ("default_speed",speed),("default_emotion",emotion)] if value is not None}
+        settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
+                                    _explicit={"tts":values})
+        options = settings.value("tts")
+        if options["api_version"] not in {"auto","1"} or options["transport"] == "grpc":
+            raise TtsError("this preserved synthesis entry supports REST v1; v3 synthesis is Phase 3")
+        if options["text_format"] != "plain":
+            raise TtsError("SSML support is Phase 3")
+        if not isinstance(text,str) or not text.strip():
+            raise TtsError("Text is empty")
+        if len(text) > MAX_CHARS:
+            raise TtsError("single v1 request exceeds the 5000-character legacy budget")
+        data = {"text":text,"lang":options["default_lang"],"voice":options["default_voice"],
+                "format":options["default_format"],"speed":str(options["default_speed"]),
+                "emotion":options["default_emotion"]}
+        for attempt in range(1,MAX_RETRIES+1):
             try:
-                response = requests.post(
-                    API_URL,
-                    headers={"Authorization": f"Api-Key {self.api_key}"},
-                    data={
-                        "folderId": self.folder_id,
-                        "text": text,
-                        "lang": lang,
-                        "voice": voice,
-                        "format": fmt,
-                        "speed": str(speed),
-                        "emotion": emotion,
-                    },
-                    timeout=120,
-                )
-            except requests.RequestException as exc:
-                last_error = str(exc)
+                response = requests.post(API_URL,
+                    headers={"Authorization":f"Api-Key {self.api_key}"},
+                    data=data,timeout=120)
+            except requests.RequestException:
                 if attempt == MAX_RETRIES:
-                    raise TtsError(f"TTS request failed after retries: {last_error}") from exc
-                time.sleep(1.5 * attempt)
+                    raise TtsError("TTS transport failed after bounded retries") from None
+                time.sleep(1.5*attempt)
                 continue
-
-            content_type = response.headers.get("Content-Type", "")
-            if response.status_code < 400 and "application/json" not in content_type:
+            if response.status_code < 400 and "application/json" not in response.headers.get("Content-Type",""):
                 return response.content
-
-            last_error = f"{response.status_code} {response.text}"
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < MAX_RETRIES:
-                time.sleep(1.5 * attempt)
+            if response.status_code in {429,500,502,503,504} and attempt < MAX_RETRIES:
+                time.sleep(1.5*attempt)
                 continue
-            raise TtsError(f"TTS failed: {last_error}")
+            remedy = ("; verify ai.speechkit-tts.user and API key scope yc.ai.speechkitTts.execute"
+                      if response.status_code == 403 else "")
+            raise TtsError(f"TTS failed: HTTP {response.status_code}{remedy}")
+        raise TtsError("TTS retry budget exhausted")
 
-        raise TtsError(f"TTS failed after retries: {last_error}")
-
-    def synthesize(self, text: str, output_path: str | Path, **kwargs) -> list[Path]:
+    def synthesize(self, text: str, output_path: str | Path, *, overwrite=False, **kwargs) -> list[Path]:
+        import tempfile
         output = Path(output_path)
-        chunks = split_text(text, MAX_CHARS)
+        chunks = split_text(text,MAX_CHARS)
         if not chunks:
             raise TtsError("Text is empty")
-
+        if output.exists() and not overwrite:
+            raise TtsError("output exists; explicit overwrite is required")
         if len(chunks) == 1:
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(self.synthesize_bytes(chunks[0], **kwargs))
+            atomic_write(output,self.synthesize_bytes(chunks[0],**kwargs),overwrite=overwrite)
             return [output]
-
-        part_paths: list[Path] = []
-        for index, chunk in enumerate(chunks, start=1):
-            part = output.with_name(f"{output.stem}.part{index:03d}{output.suffix}")
-            part.parent.mkdir(parents=True, exist_ok=True)
-            part.write_bytes(self.synthesize_bytes(chunk, **kwargs))
-            part_paths.append(part)
-
-        fmt = kwargs.get("fmt", DEFAULT_FORMAT)
-        if fmt == "mp3" and has_ffmpeg():
-            concat_mp3(part_paths, output)
-            return [output]
-        return part_paths
+        fmt = kwargs.get("format") or kwargs.get("fmt") or self.settings.value("tts.default_format")
+        with tempfile.TemporaryDirectory(prefix="yandex-speech-tts-") as directory:
+            parts=[]
+            for index,chunk in enumerate(chunks):
+                part=Path(directory)/f"part{index:03d}.{fmt}"
+                part.write_bytes(self.synthesize_bytes(chunk,**kwargs))
+                parts.append(part)
+            if fmt == "mp3" and has_ffmpeg():
+                complete=Path(directory)/"complete.mp3"
+                concat_mp3(parts,complete)
+                atomic_write(output,complete.read_bytes(),overwrite=overwrite)
+                return [output]
+            # Preserve the legacy multipart return until Phase 3 complete-output assembly.
+            targets=[output.with_name(f"{output.stem}.part{i:03d}{output.suffix}")
+                     for i in range(1,len(parts)+1)]
+            if not overwrite and any(p.exists() or p.is_symlink() for p in targets):
+                raise TtsError("a multipart output exists; explicit overwrite is required")
+            for part,target in zip(parts,targets):
+                atomic_write(target,part.read_bytes(),overwrite=overwrite)
+            return targets
 
 
 def split_text(text: str, limit: int) -> list[str]:
@@ -176,43 +186,48 @@ def concat_mp3(parts: Iterable[Path], output: Path) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Yandex SpeechKit TTS")
-    parser.add_argument("text", nargs="?", help="Text to synthesize")
-    parser.add_argument("--input-file", help="Read text from file")
-    parser.add_argument("--output", required=True, help="Output audio path")
-    parser.add_argument("--lang", default=DEFAULT_LANG)
-    parser.add_argument("--voice", default=DEFAULT_VOICE)
-    parser.add_argument("--format", dest="fmt", choices=["mp3", "oggopus", "lpcm"], default=DEFAULT_FORMAT)
-    parser.add_argument("--speed", type=float, default=1.0)
-    parser.add_argument("--emotion", default="neutral")
+    from yandex_speech import __version__
+    parser = argparse.ArgumentParser(description="Yandex SpeechKit REST v1 TTS")
+    parser.add_argument("--version",action="version",version=__version__)
+    parser.add_argument("text",nargs="?",help="Text to synthesize")
+    parser.add_argument("--input-file",help="UTF-8 file, or - for stdin")
+    parser.add_argument("--output",required=True)
+    parser.add_argument("--config",type=Path)
+    parser.add_argument("--overwrite",action="store_true")
+    parser.add_argument("--lang")
+    parser.add_argument("--voice")
+    parser.add_argument("--format",dest="fmt",choices=["mp3","oggopus","lpcm"])
+    parser.add_argument("--speed",type=float)
+    parser.add_argument("--emotion")
     return parser
 
 
 def main() -> int:
-    args = build_parser().parse_args()
-    text = args.text
-    if args.input_file:
-        text = Path(args.input_file).read_text(encoding="utf-8")
-    if not text:
-        print("Error: provide text or --input-file", file=sys.stderr)
-        return 2
-
+    parser=build_parser()
+    args=parser.parse_args()
+    if (args.text is None) == (args.input_file is None):
+        parser.error("provide exactly one of text or --input-file")
     try:
-        tts = TextToSpeech()
-        outputs = tts.synthesize(
-            text,
-            args.output,
-            lang=args.lang,
-            voice=args.voice,
-            fmt=args.fmt,
-            speed=args.speed,
-            emotion=args.emotion,
-        )
+        text=args.text
+        if args.input_file is not None:
+            text=sys.stdin.read() if args.input_file == "-" else Path(args.input_file).read_text(encoding="utf-8")
+        if args.input_file not in {None,"-"}:
+            source=Path(args.input_file)
+            target=Path(args.output)
+            if source.resolve() == target.resolve() or (target.exists() and source.samefile(target)):
+                raise TtsError("output must not replace the addressed text source")
+        context=RuntimeContext(user_home=Path.home(),
+            workspace=Path(os.environ["HERMES_HOME"]) if os.getenv("HERMES_HOME") else None,
+            selected_file=args.config)
+        outputs=TextToSpeech(_context=context).synthesize(text,args.output,
+            lang=args.lang,voice=args.voice,fmt=args.fmt,speed=args.speed,
+            emotion=args.emotion,overwrite=args.overwrite)
         for item in outputs:
             print(item)
         return 0
-    except TtsError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+    except (TtsError,SpeechError,OSError,UnicodeError) as error:
+        message=str(error) if isinstance(error,(TtsError,SpeechError)) else "cannot read input or write output"
+        print(f"Error: {message}",file=sys.stderr)
         return 1
 
 

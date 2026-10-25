@@ -32,7 +32,10 @@ class SpeechTranscriber:
         self.adapter_defaults = _adapter_defaults or {}
         self.settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults)
         home = self.context.workspace or self.context.user_home or Path.home()
-        self.job_dir = Path(job_dir) if job_dir is not None else Path(home) / ".local/share/yandex-speech/jobs"
+        state_home=Path(os.environ.get("XDG_STATE_HOME", str(Path(home)/".local/state")))
+        if self.context.workspace is not None or not state_home.is_absolute():
+            state_home=Path(home)/".local/state"
+        self.job_dir = Path(job_dir) if job_dir is not None else state_home / "yandex-speech/jobs"
         self._transport = _transport
         self._clock, self._sleep = _clock, _sleep
         self._active = {}
@@ -114,7 +117,9 @@ class SpeechTranscriber:
         settings = self._options(language_code=language_code, diarize=diarize,
             timestamps=timestamps, literature_text=literature_text, api_version=api_version,
             transport=transport)
-        if settings.value("api_version") not in {"auto", "3"} or settings.value("transport") == "rest":
+        if settings.value("api_version") not in {"auto", "3"}:
+            raise SpeechError("CONFIG", "asynchronous recorded mode requires API v3 in Phase 1")
+        if settings.value("transport") == "rest":
             raise SpeechError("PREREQUISITE", "durable v3 jobs in Phase 1 require gRPC; existing direct/async-s3 entry points remain available and REST v3 is Phase 2")
         if not self.api_key:
             raise SpeechError("AUTH", "YANDEX_SPEECH_API_KEY is required")
@@ -176,7 +181,9 @@ class SpeechTranscriber:
             _OPERATIONS.release()
 
     def poll_until_complete(self, job_or_id, *, api_version=None, deadline_seconds=None,
-                            progress=None):
+                            progress=None, transport=None):
+        if self._options(transport=transport).value("transport") == "rest":
+            raise SpeechError("CONFIG", "REST recovery is Phase 2; a selected REST-only policy excludes gRPC")
         if isinstance(job_or_id, JobHandle):
             job = job_or_id
         elif isinstance(job_or_id, Path):
@@ -194,7 +201,7 @@ class SpeechTranscriber:
             job.set_status("running")
         else:
             raise SpeechError("CONFIG", "provide a job handle, receipt Path or operation ID")
-        if api_version is not None and str(api_version) != job.api_version:
+        if api_version not in (None,"auto") and str(api_version) != job.api_version:
             raise SpeechError("CONFIG", "explicit recovery version conflicts with the saved job")
         if job.status == "submission_uncertain" or not job.operation_id:
             raise SpeechError("SUBMISSION_UNCERTAIN", "receipt has no accepted operation ID; do not resubmit it automatically")
@@ -246,7 +253,87 @@ class SpeechTranscriber:
     def get_result(self, job, **options):
         return self.poll_until_complete(job, **options)
 
+    def _legacy_call(self, method, path, *, language_code=None, diarize=None,
+                     timestamps=None, literature_text=None, api_version=None,
+                     transport=None, bucket=None, endpoint=None, prefix=None, poll_interval=None,
+                     audio_input=None, audio_track=None, deadline_seconds=1800, **options):
+        if options:
+            raise SpeechError("CONFIG", "unknown standalone legacy options")
+        settings=self._options(language_code=language_code,diarize=diarize,
+            timestamps=timestamps,literature_text=literature_text,
+            api_version=api_version,transport=transport)
+        version="2" if method == "transcribe_async_s3" else "1"
+        if settings.value("api_version") not in {"auto",version} or settings.value("transport") == "grpc":
+            raise SpeechError("CONFIG", "legacy mode conflicts with the selected version or transport")
+        if settings.value("literature_text") and method == "transcribe_auto" and settings.value("api_version") != "1":
+            raise SpeechError("CONFIG", "automatic legacy fallback cannot fulfill literature_text=true; choose explicit v1/direct or disable literary output")
+        if settings.value("enable_timestamps") or settings.value("enable_diarization"):
+            raise SpeechError("CONFIG", "required timing/speaker metadata needs the v3 method in Phase 1")
+        if not self.api_key:
+            raise SpeechError("AUTH", "YANDEX_SPEECH_API_KEY is required")
+        if poll_interval is not None and (type(poll_interval) not in (int,float) or not math.isfinite(poll_interval) or not 0 < poll_interval <= 120):
+            raise SpeechError("CONFIG", "poll interval must be in (0, 120] seconds")
+        from scripts.transcribe import _LegacySpeechTranscriber, SttError
+        legacy=_LegacySpeechTranscriber(self.api_key,self.folder_id)
+        deadline=self._deadline(deadline_seconds)
+        if method == "transcribe_async_s3" and (audio_track is not None or audio_input is not None and audio_input != AudioInputSpec()):
+            raise SpeechError("CONFIG", "explicit source track/raw adaptation for legacy v2 is Phase 2; use the v3 recorded method")
+        legacy.deadline_at=deadline
+        legacy.audio_input=audio_input
+        legacy.audio_track=audio_track
+        legacy.storage=dict(settings.value("object_storage"))
+        legacy.storage.update({k:v for k,v in [("bucket",bucket),("endpoint",endpoint),("prefix",prefix)] if v is not None})
+        if hasattr(self,"session"):
+            legacy.session=self.session
+        try:
+            result=getattr(legacy,method)(Path(path),
+                language_code=settings.value("language_code"),diarize=False,
+                **({"poll_interval":poll_interval} if method == "transcribe_async_s3" and poll_interval is not None else {}))
+        except SpeechError:
+            raise
+        except SttError as error:
+            if str(error) == "boto3 is required for explicit legacy async-s3 mode":
+                raise SpeechError("PREREQUISITE","boto3 is required for explicit legacy async-s3; follow the runtime dependency procedure") from None
+            raise SpeechError("PROVIDER", "legacy recognition failed; inspect prerequisites and selected route") from None
+        except OSError as error:
+            import requests
+            if isinstance(error,requests.exceptions.Timeout):
+                raise SpeechError("TIMEOUT","legacy request exceeded its finite timeout") from None
+            status=getattr(getattr(error,"response",None),"status_code",None)
+            category={401:"AUTH",403:"PERMISSION",429:"RATE_LIMIT"}.get(status,"TRANSPORT")
+            raise SpeechError(category,"legacy request failed; inspect selected route and permission evidence",
+                              code=str(status) if status else None) from None
+        except Exception as error:
+            response=getattr(error,"response",{})
+            code=response.get("Error",{}).get("Code") if isinstance(response,dict) else None
+            category={"AccessDenied":"PERMISSION","InvalidAccessKeyId":"AUTH",
+                      "SignatureDoesNotMatch":"AUTH","SlowDown":"RATE_LIMIT",
+                      "RequestTimeout":"TIMEOUT"}.get(code,"PROVIDER")
+            raise SpeechError(category,"legacy storage/provider request failed; inspect permission evidence",code=code) from None
+        result.update({"schema_version":1,"status":"completed" if result.get("text") else "no_speech",
+                       "input_complete":True,"completion_kind":"recorded-file",
+                       "api_version":version,"transport":"rest",
+                       "metadata_availability":{"timing":"none","speaker":"none",
+                                                "text_representation":"raw-unfulfilled" if settings.value("literature_text") else "raw"},
+                       "uncertainties":[{"kind":"literary-unfulfilled","message":"explicit legacy route returns raw text; requested literary style is unavailable in this entry"}] if settings.value("literature_text") else []})
+        return result
+
+    def transcribe_direct(self,path,**options):
+        return self._legacy_call("transcribe_direct",path,**options)
+
+    def transcribe_chunked_direct(self,path,**options):
+        return self._legacy_call("transcribe_chunked_direct",path,**options)
+
+    def transcribe_async_s3(self,path,**options):
+        return self._legacy_call("transcribe_async_s3",path,**options)
+
     def transcribe_auto(self, path, **options):
+        settings=self._options(**{k:v for k,v in options.items() if k in {
+            "language_code","diarize","timestamps","literature_text","api_version","transport"}})
+        if settings.value("api_version") == "1":
+            return self._legacy_call("transcribe_auto",path,**options)
+        if settings.value("api_version") == "2":
+            return self._legacy_call("transcribe_async_s3",path,**options)
         job = self.start_transcription(path, **options)
         return self.poll_until_complete(job)
 

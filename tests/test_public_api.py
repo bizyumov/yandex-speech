@@ -26,6 +26,22 @@ sys.meta_path.insert(0, BlockOptional())
 from yandex_speech import SpeechTranscriber, TextToSpeech, AudioInputSpec, SpeechError, __version__
 assert __version__
 assert 'grpc' not in sys.modules
+from yandex_speech.grpc_stt import sdk
+try:
+    sdk()
+except SpeechError as error:
+    assert error.category == 'PREREQUISITE'
+else:
+    raise AssertionError('missing gRPC must not be reported available')
+from integrations.hermes.provider import YandexTranscriptionProvider
+from pathlib import Path
+import tempfile
+with tempfile.TemporaryDirectory() as directory:
+    provider=YandexTranscriptionProvider(Path(directory),_secret_resolver=lambda:'synthetic')
+    assert provider.is_available()
+    assert not provider.streaming_capable
+    assert 'gRPC' in provider.streaming_unavailable_reason
+
 """
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

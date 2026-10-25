@@ -1,0 +1,5 @@
+# Optional gRPC support, resolved against the standard Hermes runtime.
+yandexcloud==0.412.0
+grpcio==1.84.1
+grpcio-tools==1.76.0
+# Hermes supplies protobuf==6.33.6 and googleapis-common-protos==1.75.1.

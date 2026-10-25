@@ -79,6 +79,48 @@ class GrpcFileTests(unittest.TestCase):
                     build_file_request(audio, language="ru-RU")
         self.assertEqual(cm.exception.category, "LIMIT")
 
+    def test_exact_storage_duration_and_size_boundaries(self):
+        uri="https://storage.yandexcloud.net/synthetic/audio.wav"
+        info={"duration_ms":14_400_000,"size_bytes":1_000_000_000,
+              "prepared":{"container":"WAV","sample_rate_hertz":16000,"channels":1}}
+        request=build_file_request(uri=uri,source_info=info)
+        self.assertEqual(request.uri,uri)
+        for key,value in [("duration_ms",14_400_001),("size_bytes",1_000_000_001),
+                          ("duration_ms",float("nan")),("size_bytes",-1)]:
+            with self.subTest(key=key,value=value):
+                broken=dict(info)
+                broken[key]=value
+                with self.assertRaises(SpeechError) as cm:
+                    build_file_request(uri=uri,source_info=broken)
+                self.assertEqual(cm.exception.category,"LIMIT")
+
+    def test_external_metadata_and_uri_are_validated_before_submission(self):
+        uri="https://storage.yandexcloud.net/synthetic/audio.wav"
+        valid={"duration_ms":1000,"size_bytes":32000,
+               "prepared":{"container":"LPCM","sample_rate_hertz":16000,"channels":1}}
+        for prepared in [None,{"container":"LPCM","sample_rate_hertz":44100,"channels":1},
+                         {"container":"MP3","sample_rate_hertz":0,"channels":1}]:
+            info=dict(valid)
+            info["prepared"]=prepared
+            with self.assertRaises(SpeechError) as cm:
+                build_file_request(uri=uri,source_info=info)
+            self.assertEqual(cm.exception.category,"CONFIG")
+        with self.assertRaises(SpeechError):
+            build_file_request(uri="https://storage.yandexcloud.net:invalid/audio.wav",source_info=valid)
+
+    def test_exact_serialized_inline_boundary_includes_the_envelope(self):
+        from yandex_speech.media import PreparedAudio
+        path=self.root/"boundary.pcm"
+        path.write_bytes(b"\0"*1024)
+        audio=PreparedAudio(path,"LPCM",16000,1,32,{"converted":True})
+        size=build_file_request(audio).ByteSize()
+        with patch("yandex_speech.grpc_stt.MAX_GRPC_BYTES",size):
+            self.assertEqual(build_file_request(audio).ByteSize(),size)
+        with patch("yandex_speech.grpc_stt.MAX_GRPC_BYTES",size-1):
+            with self.assertRaises(SpeechError) as cm:
+                build_file_request(audio)
+        self.assertEqual(cm.exception.category,"LIMIT")
+
     def test_submit_save_resume_getrecognition_no_resubmission(self):
         job = self.client.start_transcription(self.path, timestamps=True)
         self.assertEqual(job.operation_id, "operation-test")
@@ -107,9 +149,30 @@ class GrpcFileTests(unittest.TestCase):
     def test_fixed_version_does_not_fall_back_or_reinterpret_resume(self):
         for version in ["1", "2"]:
             with self.subTest(version=version):
-                with self.assertRaises(SpeechError):
+                with self.assertRaises(SpeechError) as cm:
                     self.client.start_transcription(self.path, api_version=version)
+                self.assertEqual(cm.exception.category,"CONFIG")
         self.assertEqual(self.rpc.submissions, [])
         job = self.client.start_transcription(self.path)
         with self.assertRaises(SpeechError):
             self.client.poll_until_complete(job, api_version="2")
+
+    def test_resume_auto_uses_saved_version(self):
+        job=self.client.start_transcription(self.path)
+        result=self.client.poll_until_complete(job,api_version="auto")
+        self.assertEqual(result["api_version"],"3")
+        self.assertEqual(len(self.rpc.submissions),1)
+
+    def test_recovery_respects_selected_rest_refusal_and_explicit_grpc_override(self):
+        job=self.client.start_transcription(self.path)
+        path=self.root/".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text('{"speech":{"transport":"rest"}}')
+        recovered=SpeechTranscriber(api_key="synthetic",_transport=self.rpc,
+            _context=RuntimeContext(user_home=self.root))
+        with self.assertRaises(SpeechError) as cm:
+            recovered.poll_until_complete(job.manifest_path)
+        self.assertEqual(cm.exception.category,"CONFIG")
+        self.assertEqual(self.rpc.polls,[])
+        result=recovered.poll_until_complete(job.manifest_path,transport="grpc")
+        self.assertTrue(result["input_complete"])

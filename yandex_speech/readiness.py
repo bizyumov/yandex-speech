@@ -26,11 +26,23 @@ def check(*, _context=None, _environment=None, _probe=None):
     settings = resolve_settings(_context=context, _environment=env)
     grpc = all(_available(m) for m in ["grpc", "grpc_tools", "yandex.cloud.ai.stt.v3.stt_pb2"])
     key_present = bool(env.get("YANDEX_SPEECH_API_KEY"))
+    version = settings.value("api_version")
+    version = "3" if version == "auto" else version
+    selected_transport = settings.value("transport")
+    route_transport = ("grpc" if version == "3" else "rest") if selected_transport == "auto" else selected_transport
+    route_available = grpc if (version,route_transport) == ("3","grpc") else (
+        _available("requests") if (version,route_transport) == ("1","rest") else
+        _available("boto3") and bool(settings.value("object_storage.bucket"))
+        and bool(env.get("YANDEX_SPEECH_AWS_ACCESS_KEY_ID"))
+        and bool(env.get("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"))
+        if (version,route_transport) == ("2","rest") else False)
     report = {
         "authentication": {"status": "present-unverified" if key_present else "missing",
                            "credential": "YANDEX_SPEECH_API_KEY"},
         "permissions": {
             "status": "unverified",
+            "verified_operation": None,
+            "tts_execution_status": "unverified",
             "stt_role": "ai.speechkit-stt.user",
             "stt_scope": "yc.ai.speechkitStt.execute",
             "tts_role": "ai.speechkit-tts.user",
@@ -44,9 +56,8 @@ def check(*, _context=None, _environment=None, _probe=None):
                          "storage": _available("boto3"),
                          "ffmpeg": bool(shutil.which("ffmpeg")),
                          "ffprobe": bool(shutil.which("ffprobe"))},
-        "effective_route": {"api_version": "3", "transport": "grpc",
-                            "available": grpc and settings.value("transport") != "rest"
-                            and settings.value("api_version") in {"auto", "3"}},
+        "effective_route": {"api_version": version, "transport": route_transport,
+                            "available": bool(route_available)},
         "options": [
             {"route": "gRPC v3", "status": "implemented", "tradeoff": "Recorded and arriving audio; optional generated gRPC dependencies."},
             {"route": "REST v1 direct/split, REST v2 + S3", "status": "legacy", "tradeoff": "Existing explicit entry points; no v3 timing/speaker or streaming equivalence."},
@@ -60,6 +71,7 @@ def check(*, _context=None, _environment=None, _probe=None):
                 raise SpeechError("OUTPUT_PARTIAL", "probe did not complete")
             report["authentication"]["status"] = "execution-verified"
             report["permissions"]["status"] = "execution-verified"
+            report["permissions"]["verified_operation"] = "speech-transcription"
         except SpeechError as error:
             report["authentication"]["status"] = "rejected" if error.category == "AUTH" else "present-unverified"
             report["permissions"]["status"] = "denied-cause-unverified" if error.category == "PERMISSION" else "unverified"

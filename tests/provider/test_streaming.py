@@ -5,14 +5,14 @@ import time
 import unittest
 import wave
 
-from tests.provider.test_recording import LiveRecordingTests
+from tests.provider import test_recording
 from yandex_speech.media import AudioInputSpec
 
 
 @unittest.skipUnless(os.environ.get("YANDEX_SPEECH_LIVE_TESTS") == "1",
                      "explicit provider opt-in required")
 class LiveStreamingTests(unittest.TestCase):
-    setUp = LiveRecordingTests.setUp
+    setUp = test_recording.LiveRecordingTests.setUp
 
     def test_real_paced_stream_retains_full_tail_and_finishes(self):
         with wave.open(str(self.fixtures / "single.wav"), "rb") as audio:

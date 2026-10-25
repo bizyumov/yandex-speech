@@ -67,14 +67,20 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
                 raise SpeechError("STATE", "the addressed source changed during admission")
         source = {"content": content}
     else:
-        parsed = urlparse(str(uri))
+        try:
+            parsed = urlparse(str(uri))
+            port = parsed.port
+        except ValueError:
+            raise SpeechError("CONFIG", "invalid source object URI") from None
         host = parsed.hostname or ""
         if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.query
-                or parsed.fragment or parsed.port not in (None, 443)
+                or parsed.fragment or port not in (None, 443)
                 or not (host == "storage.yandexcloud.net" or host.endswith(".storage.yandexcloud.net"))):
             raise SpeechError("CONFIG", "use a supported non-secret Yandex Object Storage URI")
         info = source_info or {}
-        prepared = info.get("prepared", {})
+        if not isinstance(info,dict) or not isinstance(info.get("prepared"),dict):
+            raise SpeechError("CONFIG", "source object requires prepared-audio metadata")
+        prepared = info["prepared"]
         duration, size = info.get("duration_ms"), info.get("size_bytes")
         container, rate = prepared.get("container"), prepared.get("sample_rate_hertz")
         if prepared.get("channels") != 1:
@@ -84,6 +90,9 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
         source = {"uri": str(uri)}
     if type(duration) not in (int, float) or not math.isfinite(duration) or not 0 <= duration <= MAX_FILE_DURATION_MS:
         raise SpeechError("LIMIT", "prepared recording must fit the four-hour single-operation budget")
+    if (container not in {"LPCM","WAV","OGG_OPUS","MP3"} or type(rate) is not int or rate <= 0
+            or container in {"LPCM","WAV"} and rate not in {8000,16000,48000}):
+        raise SpeechError("CONFIG", "source metadata does not describe a supported prepared representation")
     model = _model(p, container, rate, language=language, diarize=diarize,
                    literature_text=literature_text)
     request = p.RecognizeFileRequest(**source, recognition_model=model,
