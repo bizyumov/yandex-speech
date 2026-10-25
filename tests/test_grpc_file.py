@@ -176,3 +176,25 @@ class GrpcFileTests(unittest.TestCase):
         self.assertEqual(self.rpc.polls,[])
         result=recovered.poll_until_complete(job.manifest_path,transport="grpc")
         self.assertTrue(result["input_complete"])
+
+    def test_missing_provider_result_is_explicit_and_never_resubmitted(self):
+        class MissingResult(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.NOT_FOUND
+        job=self.client.start_transcription(self.path)
+        with patch.object(self.rpc,"get_recognition",side_effect=MissingResult()):
+            with self.assertRaises(SpeechError) as cm:
+                self.client.poll_until_complete(job)
+        self.assertEqual(cm.exception.category,"PROVIDER")
+        self.assertEqual(cm.exception.code,"RESULT_EXPIRED")
+        self.assertEqual(len(self.rpc.submissions),1)
+
+    def test_failed_cloud_operation_records_the_failed_part(self):
+        job=self.client.start_transcription(self.path)
+        with patch.object(self.rpc,"get_operation",return_value={"id":job.operation_id,
+                "done":True,"error":{"code":13}}):
+            with self.assertRaises(SpeechError):
+                self.client.poll_until_complete(job)
+        self.assertEqual(job.status,"failed")
+        self.assertEqual(job.parts[0]["status"],"failed")
+        self.assertEqual(len(self.rpc.submissions),1)

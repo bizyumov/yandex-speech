@@ -219,6 +219,7 @@ class SpeechTranscriber:
                     operation = operation_dict(self._retry(
                         lambda timeout: rpc.get_operation(job.operation_id, timeout), job, deadline))
                     if operation.get("error"):
+                        job.data["parts"][0]["status"]="failed"
                         job.set_status("failed")
                         raise SpeechError("PROVIDER", "the accepted cloud operation failed", code=str(operation["error"].get("code", "")))
                     if progress:
@@ -239,7 +240,13 @@ class SpeechTranscriber:
                         self._remaining(deadline)
                         accumulator.feed(event)
                     return accumulator.result(source_info=job.data["source_info"])
-                result = self._retry(retrieve, job, deadline)
+                try:
+                    result = self._retry(retrieve, job, deadline)
+                except SpeechError as error:
+                    if error.code == "NOT_FOUND":
+                        raise SpeechError("PROVIDER","the provider result is unavailable or expired; use a saved result, never automatically resubmit the source",
+                                          code="RESULT_EXPIRED",request_id=error.request_id) from None
+                    raise
                 result.update({"operation_id": job.operation_id, "job_id": job.job_id})
                 return job.store_result(result)
         except SpeechError as exc:
