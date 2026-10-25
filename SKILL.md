@@ -7,6 +7,10 @@ description: Transcribe recorded or arriving audio with Yandex SpeechKit, export
 
 This skill supplies speech-transcription and the existing speech-synthesis entry points. Hermes is an optional host adapter. Phase 1 implements gRPC v3 recorded/arriving recognition, durable recovery, automatic media preparation and native Hermes STT. REST v1/v3 complete-file synthesis, explicit LiveTTS, v1 SSML and gRPC incremental PCM synthesis are implemented; generation, file delivery and speaking acceptance are distinct. Full spoken-turn controls/playback and public rollout remain separate.
 
+## Speech quality and voice choice
+
+Use the [synthesis guide](references/synthesis-provider-testing.md) to choose REST v1 SSML or gRPC v3 general/LiveTTS voices, pronounce terms, place stress marks and preserve voice-specific roles. Ermil's good role is distinct from friendly. Keep API success, acoustic quality, a voice attachment and speaking in a channel as separate outcomes.
+
 ## Route ordinary voice replies first
 
 1. First distinguish sending text, sending a voice message/attachment, and speaking in the connected voice channel. For a voice-message/attachment request, use the standard `text_to_speech` tool and native message delivery. For an explicit request to speak, use the running host's voice-channel playback path and verify speaking; a file is not successful speaking. Hermes 0.22.5 has queued/event-context routing limitations described in [the delivery contract](references/hermes.md#sending-text-sending-voice-and-speaking). Distinguish an ordinary audio attachment, a native voice message and live voice-channel playback: producing one does not satisfy an explicit request for another. Do not infer live-channel intent merely because the user rejects a file attachment. Do not turn an ordinary reply into provider readiness checks, CLI invocations or manually written text files.
