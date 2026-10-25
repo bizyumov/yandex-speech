@@ -18,7 +18,9 @@ DEFAULTS = {
     "object_storage": {"endpoint": "https://storage.yandexcloud.net", "prefix": "speechkit"},
     "tts": {"api_version": "auto", "transport": "auto", "text_format": "plain",
             "default_voice": "alena", "default_lang": "ru-RU", "default_format": "mp3",
-            "default_speed": 1.0, "default_emotion": "neutral"},
+            "default_speed": 1.0, "default_emotion": "neutral", "model": "auto",
+            "role": "auto", "unsafe_mode": False, "sample_rate_hertz": 48000,
+            "volume": -19.0, "pitch_shift": 0.0, "duration_ms": 0, "duration_policy": "max"},
 }
 SCHEMA = {
     "default_format": str, "enable_diarization": bool, "enable_timestamps": bool,
@@ -27,7 +29,9 @@ SCHEMA = {
     "object_storage": {"bucket": str, "endpoint": str, "prefix": str},
     "tts": {"api_version": str, "transport": str, "text_format": str,
             "default_voice": str, "default_lang": str, "default_format": str,
-            "default_speed": float, "default_emotion": str},
+            "default_speed": float, "default_emotion": str, "model": str,
+            "role": str, "unsafe_mode": bool, "sample_rate_hertz": int,
+            "volume": float, "pitch_shift": float, "duration_ms": int, "duration_policy": str},
 }
 ENV_DEFAULTS = {
     "HERMES_TTS_VOICE": ("tts", "default_voice"),
@@ -80,7 +84,9 @@ def _validate(values, schema=SCHEMA, prefix="speech") -> None:
             _validate(value, rule, name)
             continue
         if rule is float:
-            valid = type(value) in (int, float) and math.isfinite(value) and 0.5 <= value <= 3.0
+            valid = type(value) in (int, float) and math.isfinite(value)
+            if valid:
+                valid = (-145 <= value < 0 if key == "volume" else -1000 <= value <= 1000 if key == "pitch_shift" else 0.5 <= value <= 3.0)
         else:
             valid = type(value) is rule and (rule is not str or bool(value.strip()))
         if not valid:
@@ -89,6 +95,12 @@ def _validate(values, schema=SCHEMA, prefix="speech") -> None:
             raise SpeechError("CONFIG", f"unsupported {name}")
         if key == "api_version" and value not in ({"auto", "1", "3"} if prefix.endswith(".tts") else {"auto", "1", "2", "3"}):
             raise SpeechError("CONFIG", f"unsupported {name}")
+        if key == "sample_rate_hertz" and not 8000 <= value <= 48000:
+            raise SpeechError("CONFIG", "sample rate must be in [8000, 48000]")
+        if key == "duration_ms" and value < 0:
+            raise SpeechError("CONFIG", "duration hint must be nonnegative")
+        if key == "duration_policy" and value not in {"min","max","exact"}:
+            raise SpeechError("CONFIG", "unsupported duration policy")
         if key == "text_format" and value not in {"plain", "ssml"}:
             raise SpeechError("CONFIG", f"unsupported {name}")
         if name == "speech.default_format" and value not in {"json", "txt", "srt", "vtt"}:

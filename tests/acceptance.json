@@ -183,5 +183,93 @@
         "tests.provider.test_hermes"
       ]
     }
+  },
+  "phases": {
+    "3": {
+      "schema_version": 1,
+      "phase": 3,
+      "scope": "Issue #2 synthesis: AC29–AC36; host voice-channel routing remains issue #4.",
+      "acceptance": {
+        "AC29": {
+          "offline": [
+            "tests.test_tts_v3",
+            "tests.test_tts_grpc",
+            "tests.test_tts_audio"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_actual_v1_rest_v3_rest_grpc_file_format_matrix"
+          ],
+          "host": []
+        },
+        "AC30": {
+          "offline": [
+            "tests.test_tts_boundaries",
+            "tests.test_tts_multipart",
+            "tests.test_tts_text",
+            "tests.test_tts_stream"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_published_style_ssml_cli_and_complete_multipart"
+          ],
+          "host": []
+        },
+        "AC31": {
+          "offline": [
+            "tests.test_tts_ssml",
+            "tests.test_tts_routing"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_published_style_ssml_cli_and_complete_multipart"
+          ],
+          "host": []
+        },
+        "AC32": {
+          "offline": [
+            "tests.test_tts_ssml"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC33": {
+          "offline": [
+            "tests.test_tts_stream"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_progressive_audio_precedes_input_eof"
+          ],
+          "host": []
+        },
+        "AC34": {
+          "offline": [
+            "tests.test_tts_stream",
+            "tests.test_tts_audio"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC35": {
+          "offline": [
+            "tests.test_legacy_tts",
+            "tests.test_tts_routing",
+            "tests.test_tts_boundaries"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_livetts_voices_and_legacy_language_requests"
+          ],
+          "host": []
+        },
+        "AC36": {
+          "offline": [
+            "tests.test_baseline"
+          ],
+          "provider": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_installed_skill_synthesis_commands_and_missing_grpc"
+          ],
+          "host": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
+          ]
+        }
+      }
+    }
   }
 }

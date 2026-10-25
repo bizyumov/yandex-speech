@@ -8,7 +8,7 @@ Markdown is NOT source code. Use ordinary file tools for Markdown. Builds, tests
 
 ## Required development runtime
 
-ALL skill development, execution and tests MUST use the standard Hermes environment: `/opt/hermes/venv/bin/python`. Project-local `.venv/bin/python` and other private development venvs are PROHIBITED. Do not create or install into an isolated project venv. Verify compatibility against the real standard Hermes runtime and its existing dependency constraints.
+ALL skill development, execution and tests MUST use the configured standard Hermes environment. Inside Hermes, run plain `python`: `VIRTUAL_ENV` and `PATH` are already configured. Hardcoded interpreter paths and commands that prepend a venv path are PROHIBITED. Project-local and other private development venvs remain prohibited. Outside Hermes, resolve the configured runtime/environment rather than assuming its location. Validate `sys.prefix` against the configured `VIRTUAL_ENV`; application child processes use `sys.executable`. Documentation and agent terminal examples must use plain `python`.
 
 ## Delivery workflow
 

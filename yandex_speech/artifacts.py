@@ -59,3 +59,20 @@ def atomic_write(path: Path, content: bytes, *, overwrite: bool = False) -> Path
                 sync_parent()
             except OSError:
                 raise SpeechError("PREREQUISITE", "owned output cleanup or directory durability failed") from None
+
+def publish_prepared_file(temporary,target,*,overwrite=False):
+    """Publish an owned, fully written sibling file without buffering it in memory."""
+    temporary,target=Path(temporary),Path(target)
+    if temporary.parent.resolve()!=target.parent.resolve() or not temporary.is_file():
+        raise SpeechError("CONFIG","prepared output must be an owned sibling file")
+    if target.is_symlink() or target.exists() and (not overwrite or not target.is_file()):
+        raise SpeechError("CONFIG","output exists or is a symlink")
+    try:
+        if overwrite:os.replace(temporary,target)
+        else:os.link(temporary,target);temporary.unlink()
+        descriptor=os.open(target.parent,os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
+        try:os.fsync(descriptor)
+        finally:os.close(descriptor)
+    except OSError:
+        raise SpeechError("PREREQUISITE","cannot durably publish the completed output") from None
+    return target

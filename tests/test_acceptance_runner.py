@@ -38,3 +38,17 @@ class AcceptanceRunnerTests(unittest.TestCase):
             unittest.defaultTestLoader.loadTestsFromTestCase(Skipped))
         self.assertFalse(result.wasSuccessful())
         self.assertEqual(next(iter(result.outcomes.values())),"skipped")
+
+    def test_synthesis_phase_requires_all_eight_acceptance_criteria(self):
+        from tests.__main__ import read_manifest
+        source = Path(__file__).with_name("acceptance.json")
+        manifest = read_manifest(source, phase=3)
+        self.assertEqual(set(manifest["acceptance"]),
+                         {f"AC{i:02d}" for i in range(29, 37)})
+        document = json.loads(source.read_text())
+        del document["phases"]["3"]["acceptance"]["AC36"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(ValueError):
+                read_manifest(path, phase=3)
