@@ -3,7 +3,7 @@ name: Phase 1 acceptance
 on:
   pull_request:
   push:
-    branches: [master, release/public-preparation]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
