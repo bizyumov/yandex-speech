@@ -25,13 +25,37 @@ class MediaTests(unittest.TestCase):
             self.assertAlmostEqual(audio.duration_ms, 100, delta=1)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_native_ogg_extracts_the_selected_stream_without_downmixing(self):
+        path = self.root / "tracks.ogg"
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=0.1", "-f", "lavfi", "-i",
+            "sine=frequency=880:duration=0.1", "-map", "0:a", "-map", "1:a",
+            "-c:a", "libopus", str(path),
+        ], check=True)
+        original = path.read_bytes()
+        for track in (0, 1):
+            with self.subTest(track=track):
+                expected = subprocess.check_output([
+                    "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+                    "-map", f"0:a:{track}", "-f", "s16le", "pipe:1",
+                ])
+                with prepare_audio(path, audio_track=track) as audio:
+                    self.assertEqual(audio.container, "OGG_OPUS")
+                    self.assertEqual(audio.source_info["original"]["track"], track)
+                    actual = subprocess.check_output([
+                        "ffmpeg", "-nostdin", "-v", "error", "-i", str(audio.path),
+                        "-f", "s16le", "pipe:1",
+                    ])
+                    self.assertEqual(actual, expected)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_arbitrary_decodable_media_is_converted_automatically(self):
         source = make_wave(self.root / "stereo.wav", channels=2, rate=44100)
         for name, args in [
             ("input.flac", ["-c:a", "flac"]),
             ("input.m4a", ["-c:a", "aac"]),
             ("input.webm", ["-c:a", "libopus"]),
-            ("input.mp3", ["-c:a", "libmp3lame"]),
             ("float.wav", ["-c:a", "pcm_f32le"]),
             ("24bit.wav", ["-c:a", "pcm_s24le"]),
         ]:

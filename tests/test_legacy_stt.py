@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,23 @@ class LegacySttTests(unittest.TestCase):
         self.assertEqual(call.kwargs["params"]["rawResults"],"true")
         self.assertIsNone(result["segments"][0]["start"])
         self.assertEqual(result["api_version"],"1")
+
+    def test_v1_still_downmixes_native_stereo_wav_and_ogg(self):
+        wav = make_wave(self.root / "stereo.wav", channels=2)
+        ogg = self.root / "stereo.ogg"
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(wav),
+                        "-c:a", "libopus", str(ogg)], check=True)
+        for path in (wav, ogg):
+            with self.subTest(suffix=path.suffix):
+                self.client.transcribe_direct(path, language_code="ru-RU",
+                                              diarize=False, literature_text=False)
+                call = self.client.session.post.call_args.kwargs
+                expected = subprocess.check_output([
+                    "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
+                    "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+                ])
+                self.assertEqual(call["params"]["format"], "lpcm")
+                self.assertEqual(call["data"], expected)
 
     def test_direct_does_not_silently_drop_required_features(self):
         for options in [{"literature_text":False,"diarize":True},

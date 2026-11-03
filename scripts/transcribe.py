@@ -66,15 +66,17 @@ class _LegacySpeechTranscriber:
                            audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as audio:
             if audio.duration_ms > 30_000:
                 raise SttError("audio duration should be less than 30s")
-            if audio.container == "OGG_OPUS":
+            if audio.container == "OGG_OPUS" and audio.channels == 1:
                 content=audio.path.read_bytes()
                 params={"format":"oggopus"}
-            elif audio.container == "WAV":
+            elif audio.container == "WAV" and audio.channels == 1:
                 with wave.open(str(audio.path),"rb") as stream:
                     content=stream.readframes(stream.getnframes())
                 params={"format":"lpcm","sampleRateHertz":str(audio.sample_rate_hertz)}
             else:
-                result=subprocess.run(["ffmpeg","-nostdin","-v","error","-i",str(audio.path),
+                raw_args=(["-f","s16le","-ar",str(audio.sample_rate_hertz),
+                           "-ac",str(audio.channels)] if audio.container == "LPCM" else [])
+                result=subprocess.run(["ffmpeg","-nostdin","-v","error",*raw_args,"-i",str(audio.path),
                     "-vn","-ac","1","-ar","16000","-f","s16le","pipe:1"],
                     stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=self._remaining())
                 if result.returncode:
@@ -113,7 +115,7 @@ class _LegacySpeechTranscriber:
                            audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as prepared:
             with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as tmp:
                 pattern=Path(tmp)/"chunk_%03d.ogg"
-                raw_args=(["-f","s16le","-ar",str(prepared.sample_rate_hertz),"-ac","1"]
+                raw_args=(["-f","s16le","-ar",str(prepared.sample_rate_hertz),"-ac",str(prepared.channels)]
                           if prepared.container == "LPCM" else [])
                 result=subprocess.run(["ffmpeg","-nostdin","-v","error",*raw_args,
                     "-i",str(prepared.path),"-ac","1","-ar","16000","-c:a","libopus",

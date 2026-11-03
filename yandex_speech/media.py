@@ -105,7 +105,8 @@ def _probe(path: Path, track: int | None, *, timeout=120) -> tuple[dict, float]:
             "format": container.get("format_name", ""), "codec": stream.get("codec_name", ""),
             "sample_rate_hertz": int(stream["sample_rate"]),
             "channels": int(stream["channels"]), "sample_format": stream.get("sample_fmt"),
-            "track": index, "start_time_seconds": start, "container_start_time_seconds": origin,
+            "track": index, "audio_stream_count": len(streams),
+            "start_time_seconds": start, "container_start_time_seconds": origin,
             "duration_ms": seconds * 1000,
         }, seconds * 1000
     except (ValueError, KeyError, IndexError, TypeError):
@@ -149,20 +150,37 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
             "original": original, "metadata_origin": "local_probe",
             "timeline_offset_seconds": max(0.0, original["start_time_seconds"])}
     container = None
-    if channels == 1 and original["track"] == 0 and original["start_time_seconds"] == 0:
-        if spec.source_format == "lpcm" and original["codec"] == "s16le" and rate in {8000,16000,48000}:
-            container = "LPCM"
-        elif original["codec"] == "pcm_s16le" and "wav" in original["format"].split(",") and rate in {8000,16000,48000}:
-            container = "WAV"
-        elif original["codec"] == "opus" and "ogg" in original["format"].split(","):
-            container = "OGG_OPUS"
-        elif original["codec"] == "mp3" and "mp3" in original["format"].split(","):
-            container = "MP3"
+    if spec.source_format == "lpcm" and original["codec"] == "s16le" and rate in {8000,16000,48000}:
+        container = "LPCM"
+    elif original["codec"] == "pcm_s16le" and "wav" in original["format"].split(",") and rate in {8000,16000,48000}:
+        container = "WAV"
+    elif original["codec"] == "opus" and "ogg" in original["format"].split(","):
+        container = "OGG_OPUS"
+    elif original["codec"] == "mp3" and "mp3" in original["format"].split(","):
+        container = "MP3"
     remaining()
+    if container and (original["track"] != 0 or original.get("audio_stream_count", 1) > 1):
+        # A native container can still need stream extraction, without PCM expansion.
+        with tempfile.TemporaryDirectory(prefix="yandex-speech-audio-") as directory:
+            suffix = {"WAV": "wav", "OGG_OPUS": "ogg", "MP3": "mp3"}[container]
+            prepared = Path(directory) / f"selected.{suffix}"
+            _run([_tool("ffmpeg"), "-nostdin", "-loglevel", "error", "-xerror", "-y",
+                  "-i", str(path), "-map", f"0:a:{original['track']}", "-vn",
+                  "-c:a", "copy", str(prepared)], timeout=remaining())
+            selected, actual_ms = _probe(prepared, 0, timeout=remaining())
+            remaining()
+            info.update({"converted": True, "duration_ms": actual_ms,
+                         "size_bytes": prepared.stat().st_size,
+                         "prepared": {"container": container,
+                                      "sample_rate_hertz": selected["sample_rate_hertz"],
+                                      "channels": selected["channels"]}})
+            yield PreparedAudio(prepared, container, selected["sample_rate_hertz"],
+                                selected["channels"], actual_ms, info)
+        return
     if container:
         info.update({"converted": False, "size_bytes": path.stat().st_size,
-                     "prepared": {"container": container, "sample_rate_hertz": rate, "channels": 1}})
-        yield PreparedAudio(path, container, rate, 1, duration_ms, info)
+                     "prepared": {"container": container, "sample_rate_hertz": rate, "channels": channels}})
+        yield PreparedAudio(path, container, rate, channels, duration_ms, info)
         return
     with tempfile.TemporaryDirectory(prefix="yandex-speech-audio-") as directory:
         prepared = Path(directory) / "prepared.wav"
