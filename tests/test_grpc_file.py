@@ -1,4 +1,6 @@
+import hashlib
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +12,7 @@ from tests.test_results import final, refinement
 from yandex_speech.config import RuntimeContext
 from yandex_speech.errors import SpeechError
 from yandex_speech.grpc_stt import build_file_request, MAX_GRPC_BYTES
-from yandex_speech.media import prepare_audio
+from yandex_speech.media import AudioInputSpec, prepare_audio
 from yandex_speech.transcription import SpeechTranscriber
 
 
@@ -57,6 +59,70 @@ class GrpcFileTests(unittest.TestCase):
         self.client = SpeechTranscriber(api_key="synthetic-key",
             job_dir=self.root / "jobs", _context=RuntimeContext(user_home=self.root),
             _transport=self.rpc)
+
+    def test_native_mp3_survives_nonzero_start_and_stereo_without_pcm_expansion(self):
+        for channels in (1, 2):
+            with self.subTest(channels=channels):
+                path = self.root / f"native-{channels}.mp3"
+                subprocess.run([
+                    "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi",
+                    "-i", f"anullsrc=r=16000:cl={'mono' if channels == 1 else 'stereo'}",
+                    "-t", "1900", "-c:a", "libmp3lame", "-b:a", "8k", str(path),
+                ], check=True, timeout=60)
+                original = path.read_bytes()
+                # Even the former mono/16 kHz conversion would exceed the real budget.
+                self.assertGreater(1900 * 16000 * 2, MAX_GRPC_BYTES)
+                self.assertLess(len(original) + 4096, MAX_GRPC_BYTES)
+                with patch("yandex_speech.media._tool", side_effect=lambda name:
+                           self.fail("native MP3 must not invoke ffmpeg")
+                           if name == "ffmpeg" else name):
+                    job = self.client.start_transcription(path, diarize=False)
+                request = self.rpc.submissions[-1]
+                self.assertEqual(request.content, original)
+                self.assertEqual(
+                    request.recognition_model.audio_format.container_audio.container_audio_type,
+                    request.recognition_model.audio_format.container_audio.MP3,
+                )
+                self.assertLessEqual(request.ByteSize(), MAX_GRPC_BYTES)
+                info = job.data["source_info"]
+                self.assertFalse(info["converted"])
+                self.assertEqual(info["original_path"], str(path))
+                self.assertEqual(info["source_sha256"], hashlib.sha256(original).hexdigest())
+                self.assertEqual(info["prepared"]["channels"], channels)
+                self.assertGreater(info["original"]["start_time_seconds"], 0)
+                self.assertEqual(info["timeline_offset_seconds"],
+                                 info["original"]["start_time_seconds"])
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_stereo_wav_and_raw_preserve_channel_metadata_in_recorded_requests(self):
+        wav = make_wave(self.root / "stereo.wav", channels=2)
+        raw = self.root / "stereo.pcm"
+        raw.write_bytes(b"\\0" * 6400)
+        for path, spec, container in (
+            (wav, None, "WAV"),
+            (raw, AudioInputSpec(source_format="lpcm", sample_rate_hertz=16000,
+                                channels=2), "LPCM"),
+        ):
+            with self.subTest(container=container):
+                original = path.read_bytes()
+                with prepare_audio(path, audio_input=spec) as audio:
+                    self.assertEqual(audio.path, path)
+                    self.assertEqual(audio.channels, 2)
+                    self.assertEqual(audio.source_info["prepared"]["channels"], 2)
+                    self.assertFalse(audio.source_info["converted"])
+                    request = build_file_request(audio, diarize=False)
+                    self.assertEqual(request.content, original)
+                    if container == "LPCM":
+                        self.assertEqual(
+                            request.recognition_model.audio_format.raw_audio.audio_channel_count, 2)
+                info = {"duration_ms": 100, "size_bytes": len(original),
+                        "prepared": {"container": container,
+                                     "sample_rate_hertz": 16000, "channels": 2}}
+                stored = build_file_request(
+                    uri="https://storage.yandexcloud.net/synthetic/stereo", source_info=info)
+                if container == "LPCM":
+                    self.assertEqual(
+                        stored.recognition_model.audio_format.raw_audio.audio_channel_count, 2)
 
     def test_actual_protobuf_fields_and_effective_policy(self):
         with prepare_audio(self.path) as audio:

@@ -23,10 +23,10 @@ def sdk():
     return grpc, stt_pb2, stt_service_pb2, stt_service_pb2_grpc, operation_service_pb2, operation_service_pb2_grpc
 
 
-def _model(p, container, rate, *, language, diarize, literature_text, streaming=False):
+def _model(p, container, rate, *, language, diarize, literature_text, streaming=False, channels=1):
     if container == "LPCM":
         audio = p.AudioFormatOptions(raw_audio=p.RawAudio(
-            audio_encoding=p.RawAudio.LINEAR16_PCM, sample_rate_hertz=rate, audio_channel_count=1))
+            audio_encoding=p.RawAudio.LINEAR16_PCM, sample_rate_hertz=rate, audio_channel_count=channels))
     else:
         try:
             kind = p.ContainerAudio.ContainerAudioType.Value(container)
@@ -65,6 +65,7 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
         if not audio.source_info.get("converted") and audio.source_info.get("source_sha256"):
             if hashlib.sha256(content).hexdigest() != audio.source_info["source_sha256"]:
                 raise SpeechError("STATE", "the addressed source changed during admission")
+        channels = audio.channels
         source = {"content": content}
     else:
         try:
@@ -83,8 +84,7 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
         prepared = info["prepared"]
         duration, size = info.get("duration_ms"), info.get("size_bytes")
         container, rate = prepared.get("container"), prepared.get("sample_rate_hertz")
-        if prepared.get("channels") != 1:
-            raise SpeechError("CONFIG", "source metadata must describe prepared mono audio")
+        channels = prepared.get("channels")
         if type(size) is not int or not 0 <= size <= MAX_STORAGE_BYTES:
             raise SpeechError("LIMIT", "source object size is missing or exceeds the storage budget")
         source = {"uri": str(uri)}
@@ -93,8 +93,10 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
     if (container not in {"LPCM","WAV","OGG_OPUS","MP3"} or type(rate) is not int or rate <= 0
             or container in {"LPCM","WAV"} and rate not in {8000,16000,48000}):
         raise SpeechError("CONFIG", "source metadata does not describe a supported prepared representation")
+    if type(channels) is not int or channels not in {1, 2}:
+        raise SpeechError("CONFIG", "source metadata must describe one or two audio channels")
     model = _model(p, container, rate, language=language, diarize=diarize,
-                   literature_text=literature_text)
+                   literature_text=literature_text, channels=channels)
     request = p.RecognizeFileRequest(**source, recognition_model=model,
         speaker_labeling=p.SpeakerLabelingOptions(speaker_labeling=p.SpeakerLabelingOptions.SPEAKER_LABELING_ENABLED if diarize else p.SpeakerLabelingOptions.SPEAKER_LABELING_DISABLED))
     if uri is None and request.ByteSize() > MAX_GRPC_BYTES:
