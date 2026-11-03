@@ -39,8 +39,10 @@ class LegacySttTests(unittest.TestCase):
                         "-c:a", "libopus", str(ogg)], check=True)
         for path in (wav, ogg):
             with self.subTest(suffix=path.suffix):
-                self.client.transcribe_direct(path, language_code="ru-RU",
-                                              diarize=False, literature_text=False)
+                result = self.client.transcribe_direct(path, language_code="ru-RU",
+                                                       diarize=False, literature_text=False)
+                self.assertEqual(result["source_info"]["prepared"]["channels"], 1)
+                self.assertEqual(result["source_info"]["prepared"]["container"], "LPCM")
                 call = self.client.session.post.call_args.kwargs
                 expected = subprocess.check_output([
                     "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),

@@ -83,6 +83,16 @@ class _LegacySpeechTranscriber:
                     raise SttError("ffmpeg failed to prepare v1 audio")
                 content=result.stdout
                 params={"format":"lpcm","sampleRateHertz":"16000"}
+            transmitted = "OGG_OPUS" if params["format"] == "oggopus" else "LPCM"
+            rate = int(params.get("sampleRateHertz", audio.sample_rate_hertz))
+            info = audio.source_info
+            info.update({"converted": info["converted"] or audio.container != transmitted
+                         or audio.channels != 1 or audio.sample_rate_hertz != rate,
+                         "size_bytes": len(content),
+                         "prepared": {"container": transmitted,
+                                      "sample_rate_hertz": rate, "channels": 1}})
+            if transmitted == "LPCM":
+                info["duration_ms"] = len(content) / (2 * rate) * 1000
             if len(content)>=1_000_000:
                 raise SttError("audio should be less than 1 mb")
             response=self.session.post(SYNC_URL,
