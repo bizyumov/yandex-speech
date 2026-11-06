@@ -103,11 +103,13 @@ def _boundary(text,maximum):
     return matches[-1].end() if matches and matches[-1].end()>0 else maximum
 
 
-def partition_plain(text,fits):
+def iter_plain_parts(text, fits, *, check=lambda: None):
+    """Prepare one proven packet at a time, checking owned cancellation."""
+    check()
     if not isinstance(text,str) or not text.strip():
         raise SpeechError("CONFIG","synthesis input must contain speakable text")
-    parts=[]
     while text:
+        check()
         low,high,best=1,len(text),0
         while low<=high:
             middle=(low+high)//2
@@ -118,12 +120,16 @@ def partition_plain(text,fits):
         if best==0:
             raise SpeechError("LIMIT","a minimum text fragment exceeds the selected request budget")
         count=native_boundary(text,best)
+        check()
         if count == 0:
             raise SpeechError("LIMIT", "an indivisible pronunciation control and its spoken context "
                               "exceed the selected request budget; shorten that unit or select a larger route")
-        parts.append(text[:count])
+        yield text[:count]
         text=text[count:]
-    return parts
+
+
+def partition_plain(text,fits):
+    return list(iter_plain_parts(text,fits))
 
 
 def bisect_text(text):

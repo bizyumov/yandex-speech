@@ -282,3 +282,15 @@ class IncrementalNativeMarkupTests(unittest.TestCase):
             self.assertTrue(stream.input_complete)
         self.assertEqual("".join(r.synthesis_input.text for r in transport.requests
                                 if r.HasField("synthesis_input")), text)
+
+    def test_cancellation_stops_owned_known_text_preparation(self):
+        from yandex_speech.tts_stream import AudioStream
+        stream = AudioStream("я"*1000000, Transport(), options())
+        self.addCleanup(stream.close)
+        stream._start()
+        time.sleep(.05)
+        started = time.monotonic()
+        stream.cancel()
+        self.assertLess(time.monotonic()-started, 2)
+        self.assertFalse(any(worker.is_alive() for worker in stream.workers))
+        self.assertEqual(stream.metadata["status"], "cancelled")

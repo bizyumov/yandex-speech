@@ -6,7 +6,7 @@ import time
 
 from .errors import SpeechError
 from .tts_v3 import grpc_sdk
-from .tts_text import native_boundary, native_spans, partition_plain
+from .tts_text import native_boundary, native_spans, iter_plain_parts
 
 _END=object()
 
@@ -98,7 +98,7 @@ class AudioStream:
                     raise SpeechError("CONFIG","text fragments must be strings")
                 if self._known_text:
                     # Whole input is known: prove pronunciation boundaries before queueing.
-                    packets=partition_plain(fragment,lambda value:len(value)<=5000)
+                    packets=iter_plain_parts(fragment,lambda value:len(value)<=5000,check=self._check)
                 else:
                     # Packets are not synthesis boundaries; _phrase retains lexical state.
                     packets=(fragment[start:start+5000] for start in range(0,len(fragment),5000))
