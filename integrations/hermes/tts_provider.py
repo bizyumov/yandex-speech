@@ -3,6 +3,7 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
+import uuid
 
 from agent.tts_provider import TTSProvider
 from yandex_speech import TextToSpeech
@@ -48,10 +49,31 @@ class YandexTTSProvider(TTSProvider):
             _context=RuntimeContext(workspace=self.workspace),
             _adapter_defaults={"tts": adapter}, _environment=environment)
 
+    def _preflight(self, *, pcm=False):
+        client = self._client()
+        settings, options, version = client._options()
+        if options["text_format"] != "plain":
+            raise SpeechError("CONFIG", "native replies require plain text; use the explicit skill SSML operation")
+        if pcm:
+            if (options["api_version"] == "1" or options["transport"] == "rest"
+                    or options.get("unsafe_mode") or options.get("duration_ms")
+                    or "3" not in options["_voice_info"]["versions"]):
+                raise SpeechError("CONFIG", "effective settings do not support native PCM streaming")
+            options = dict(options, default_format="lpcm", sample_rate_hertz=24000)
+            version = "3"
+        if version == "3":
+            from yandex_speech.tts_v3 import request_body
+            request_body("Native availability check.", options, sources=settings.sources)
+        else:
+            if options.get("unsafe_mode"):
+                raise SpeechError("CONFIG", "unsafe mode requires API v3")
+            from yandex_speech.tts_text import v1_form
+            v1_form("Native availability check.", options)
+        return options, version
+
     def is_available(self):
         try:
-            client = self._client()
-            _, options, _ = client._options()
+            options, _ = self._preflight()
             if options["transport"] == "grpc":
                 from yandex_speech.tts_v3 import grpc_sdk
                 grpc_sdk()
@@ -61,6 +83,8 @@ class YandexTTSProvider(TTSProvider):
 
     def list_models(self):
         return [{"id": "general", "display": "Yandex general"},
+                {"id": "general:rc", "display": "Yandex general:rc"},
+                {"id": "general:deprecated", "display": "Yandex general:deprecated"},
                 {"id": "livetts", "display": "Yandex LiveTTS"}]
 
     def list_voices(self):
@@ -72,17 +96,12 @@ class YandexTTSProvider(TTSProvider):
         return self._client()._options()[1]["default_voice"]
 
     def default_model(self):
-        return self._client()._options()[1]["model"]
+        return self._client()._options()[1]["_model"]
 
     @property
     def streams_pcm(self):
         try:
-            client = self._client()
-            _, options, _ = client._options()
-            if (options["api_version"] == "1" or options["transport"] == "rest"
-                    or options["text_format"] != "plain" or options.get("unsafe_mode")
-                    or options.get("duration_ms") or "3" not in options["_voice_info"]["versions"]):
-                return False
+            self._preflight(pcm=True)
             from yandex_speech.tts_v3 import grpc_sdk
             grpc_sdk()
             return True
@@ -113,15 +132,22 @@ class YandexTTSProvider(TTSProvider):
         client = self._client(voice=voice, model=model, speed=speed)
         stage = Path(tempfile.mkdtemp(prefix=".yandex-native-tts-", dir=target.parent))
         retain = False
+        staged_output = stage / ("audio" + extension)
         try:
-            client.synthesize(text, stage / ("audio" + extension), format=fmt)
+            client.synthesize(text, staged_output, format=fmt)
             if self._empty_allocation(target) != before:
                 raise SpeechError("STATE", "native TTS output allocation changed during synthesis")
-            atomic_write(target, (stage / ("audio" + extension)).read_bytes(),
-                         overwrite=before is not None)
-            return str(target)
+            # A preallocated inode can acquire another writer after any check.
+            # The native SPI consumes the returned path, so preserve that inode
+            # and publish a unique sibling instead of ever enabling overwrite.
+            output = target if before is None else target.with_name(
+                target.stem + "-" + uuid.uuid4().hex + extension)
+            atomic_write(output, staged_output.read_bytes())
+            return str(output)
         except Exception as error:
-            retain = getattr(error, "partial_dir", None) is not None
+            retain = getattr(error, "partial_dir", None) is not None or staged_output.is_file()
+            if retain and getattr(error, "partial_dir", None) is None:
+                error.partial_dir = stage
             raise
         finally:
             if not retain:

@@ -148,8 +148,9 @@ class HermesTTSBindingTests(unittest.TestCase):
         output.touch()
         provider = self.provider(fake_output=True)
         result = provider.synthesize("Текст.", str(output), format="mp3", ignored_host_field=True)
-        self.assertEqual(result, str(output))
-        self.assertEqual(output.read_bytes(), b"synthetic adapter payload")
+        self.assertNotEqual(result, str(output))
+        self.assertEqual(output.read_bytes(), b"")
+        self.assertEqual(Path(result).read_bytes(), b"synthetic adapter payload")
         other = provider.synthesize("Текст.", str(self.home / "unsupported.flac"), format="flac")
         self.assertTrue(other.endswith(".wav"))
         self.assertEqual(self.clients[-1].recorded[1]["format"], "wav")
@@ -225,3 +226,60 @@ class HermesTTSBindingTests(unittest.TestCase):
                     profile_secret(self.home, "YANDEX_SPEECH_API_KEY")
                 self.assertEqual(error.exception.category, "AUTH")
                 lookup.assert_not_called()
+
+    def test_incompatible_livetts_controls_do_not_advertise_availability(self):
+        provider = self.provider({"voice": "sergey", "model": "livetts", "speed": 1.5})
+        self.assertFalse(provider.is_available())
+        self.assertFalse(provider.streams_pcm)
+
+    def test_default_model_is_the_effective_catalog_model(self):
+        for voice, model in [("ermil", "general"), ("sergey", "livetts")]:
+            provider = self.provider({"voice": voice})
+            self.assertEqual(provider.default_model(), model)
+            self.assertIn(model, {item["id"] for item in provider.list_models()})
+
+    def test_a_late_writer_after_the_final_guard_is_never_overwritten(self):
+        from yandex_speech import artifacts
+        output = self.home / "speech.mp3"
+        output.touch()
+        provider = self.provider(fake_output=True)
+        publish = artifacts.atomic_write
+        def late_write(path, data, **kwargs):
+            output.write_bytes(b"late concurrent owner")
+            return publish(path, data, **kwargs)
+        with patch("yandex_speech.artifacts.atomic_write", side_effect=late_write):
+            result = Path(provider.synthesize("Текст.", str(output)))
+        self.assertEqual(output.read_bytes(), b"late concurrent owner")
+        self.assertNotEqual(result, output)
+        self.assertEqual(result.suffix, ".mp3")
+        self.assertEqual(result.read_bytes(), b"synthetic adapter payload")
+
+    def test_two_calls_sharing_an_empty_allocation_return_distinct_owned_outputs(self):
+        from concurrent.futures import ThreadPoolExecutor
+        output = self.home / "speech.mp3"
+        output.touch()
+        provider = self.provider(fake_output=True)
+        barrier = __import__("threading").Barrier(2)
+        factory = provider._client_factory
+        def paired_factory(**kwargs):
+            client = factory(**kwargs)
+            synthesize = client.synthesize
+            def paired(text, path, **options):
+                barrier.wait(timeout=2)
+                return synthesize(text, path, **options)
+            client.synthesize = paired
+            return client
+        provider._client_factory = paired_factory
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda text: Path(provider.synthesize(text, str(output))),
+                                        ["Первая.", "Вторая."]))
+        self.assertEqual(len(set(results)), 2)
+        self.assertEqual(output.read_bytes(), b"")
+        self.assertTrue(all(path.read_bytes() == b"synthetic adapter payload" for path in results))
+
+    def test_compatible_general_and_livetts_pcm_are_advertised(self):
+        for voice in ("ermil", "sergey"):
+            with self.subTest(voice=voice):
+                provider = self.provider({"voice": voice})
+                self.assertTrue(provider.is_available())
+                self.assertTrue(provider.streams_pcm)
