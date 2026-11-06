@@ -99,41 +99,46 @@ def _migration_value(values, name, value):
 
 
 def _direct_defaults(kind, words, values):
-    options = {"--lang": "language", "--language": "language",
-               "--api-version": "api_version", "--transport": "transport"}
+    options = {"--lang": "language", "--api-version": "api_version", "--transport": "transport"}
+    structural = {"--output"}
     if kind == "tts":
         options.update({"--voice": "voice", "--adapter-voice": "voice",
+                        "--adapter-lang": "language", "--adapter-model": "model",
                         "--emotion": "role", "--adapter-emotion": "role", "--role": "role",
+                        "--adapter-role": "role",
                         "--model": "model", "--speed": "speed", "--format": "output_format"})
+        structural.add("--input-file")
+    else:
+        options["--adapter-language"] = "language"
+        structural.update({"--mode", "--format"})
     inputs = outputs = 0
     while words:
         token = words.pop(0)
         if token == "{input_path}" and kind == "stt":
             inputs += 1
             continue
-        if token not in options and token not in {"--input-file", "--output", "-o", "--output-dir",
-                                                  "--mode", "--format"}:
+        if token not in options and token not in structural:
             raise SpeechError("CONFIG", "legacy command contains unsupported arguments")
         if not words:
             raise SpeechError("CONFIG", "legacy command option is missing its value")
         value = words.pop(0)
         if token == "--input-file":
-            if kind != "tts" or value != "{input_path}":
+            if value != "{input_path}":
                 raise SpeechError("CONFIG", "legacy input must be the exact addressed input")
             inputs += 1
-        elif token in {"--output", "-o", "--output-dir"}:
+        elif token == "--output":
             allowed = {"{output_path}"} if kind == "tts" else {
                 "{output_dir}", "{output_dir}/transcript.txt"}
-            if value not in allowed or kind == "tts" and token == "--output-dir":
+            if value not in allowed:
                 raise SpeechError("CONFIG", "legacy output does not match the native addressed contract")
             outputs += 1
         elif token == "--mode":
-            if kind != "stt" or value not in {"auto", "async"}:
+            if value not in {"auto", "async"}:
                 raise SpeechError("CONFIG", "legacy recognition mode cannot be preserved")
         elif token == "--format" and kind == "stt":
             if value != "txt":
                 raise SpeechError("CONFIG", "native message transcription cannot preserve this export selection")
-        elif value == "{language}" and kind == "stt" and token in {"--lang", "--language"}:
+        elif value == "{language}" and kind == "stt" and options[token] == "language":
             continue
         elif "{" in value or "}" in value:
             raise SpeechError("CONFIG", "legacy behavioral placeholders require reconciliation")

@@ -306,6 +306,49 @@ class NativeSetupTests(unittest.TestCase):
             self.assertEqual(self.config.read_bytes(), before)
             self.assertFalse((self.home / "plugins").exists())
 
+    def test_migration_rejects_output_and_language_aliases_rejected_by_real_parsers(self):
+        import contextlib
+        import copy
+        import io
+        from scripts.tts import build_parser as tts_parser
+        from scripts.transcribe import build_parser as stt_parser
+
+        baseline = self.backend.read()
+        for kind, parser, arguments in [
+            ("tts", tts_parser, ["--input-file", "{input_path}", "-o", "{output_path}"]),
+            ("tts", tts_parser, ["--input-file", "{input_path}", "--output", "{output_path}",
+                                 "--language", "ru-RU"]),
+            ("tts", tts_parser, ["--input-file", "{input_path}", "--output-dir", "{output_path}"]),
+            ("stt", stt_parser, ["{input_path}", "-o", "{output_dir}"]),
+            ("stt", stt_parser, ["{input_path}", "--output", "{output_dir}", "--language", "ru-RU"]),
+            ("stt", stt_parser, ["{input_path}", "--output-dir", "{output_dir}"]),
+        ]:
+            with self.subTest(kind=kind, arguments=arguments):
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as rejected:
+                    parser().parse_args(arguments)
+                self.assertEqual(rejected.exception.code, 2)
+                script = "tts.py" if kind == "tts" else "transcribe.py"
+                data = copy.deepcopy(baseline)
+                data[kind]["providers"] = {"yandex": {"type": "command", "command":
+                    "python " + str(self.root / "scripts" / script) + " " + " ".join(arguments)}}
+                self.write(data)
+                before = self.config.read_bytes()
+                with self.assertRaises(SpeechError):
+                    self.plan()
+                self.assertEqual(self.config.read_bytes(), before)
+                self.assertFalse((self.home / "plugins").exists())
+
+    def test_canonical_direct_language_flags_remain_migratable(self):
+        data = self.backend.read()
+        data["tts"]["providers"] = {"yandex": {"type": "command", "command":
+            "python " + str(self.root / "scripts/tts.py") +
+            " --input-file {input_path} --output {output_path} --lang ru-RU"}}
+        data["stt"]["providers"] = {"yandex": {"type": "command", "command":
+            "python " + str(self.root / "scripts/transcribe.py") +
+            " {input_path} --output {output_dir}/transcript.txt --lang {language} --format txt"}}
+        self.write(data)
+        self.assertEqual(self.plan().after["tts"]["yandex"]["language"], "ru-RU")
+
     def test_known_success_cat_and_adapter_flags_migrate_the_literal_preferences(self):
         data = self.backend.read()
         data["stt"]["providers"] = {"yandex": {"type": "command", "command":
