@@ -1,6 +1,6 @@
 name: yandex-speech
 version: 0.1.0
-description: Yandex SpeechKit recorded and arriving-audio transcription
+description: Yandex SpeechKit native transcription and file/PCM synthesis
 author: Boris Izyumov
 license: MIT
 requires_hermes: ">=0.22.5"

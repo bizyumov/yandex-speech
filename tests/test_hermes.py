@@ -9,6 +9,7 @@ from agent.transcription_provider import TranscriptionProvider, TranscriptionStr
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from tests.test_streaming import FakeStreamingRpc
 from yandex_speech.transcription import SpeechTranscriber
+from yandex_speech.errors import SpeechError
 
 
 class HermesBindingTests(unittest.TestCase):
@@ -82,3 +83,145 @@ class HermesBindingTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["transcript"],"")
         self.assertEqual(result["provider"],"yandex")
+
+class HermesTTSBindingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.clients = []
+
+    def provider(self, profile=None, *, fake_output=False):
+        from integrations.hermes.tts_provider import YandexTTSProvider
+        from yandex_speech import TextToSpeech
+        def factory(**kwargs):
+            client = TextToSpeech(**kwargs)
+            self.clients.append(client)
+            if fake_output:
+                def synthesize(text, path, **options):
+                    client.recorded = (text, options)
+                    Path(path).write_bytes(b"synthetic adapter payload")
+                    return [Path(path)]
+                client.synthesize = synthesize
+                client.stream_audio = lambda text, **options: iter([b"\0\0"])
+            return client
+        return YandexTTSProvider(self.home, profile=profile,
+            _secret_resolver=lambda name: "synthetic" if name == "YANDEX_SPEECH_API_KEY" else None,
+            _client_factory=factory)
+
+    def test_real_plugin_registers_both_native_provider_types(self):
+        from integrations.hermes import register
+        from agent.tts_provider import TTSProvider
+        from agent.tts_registry import get_provider
+        manager = PluginManager(scope_key=str(self.home))
+        ctx = PluginContext(PluginManifest(name="yandex-speech"), manager)
+        with patch("hermes_cli.config.load_config_readonly", return_value={"stt": {}, "tts": {}}):
+            register(ctx)
+        provider = get_provider("yandex", scope=str(self.home))
+        self.assertIsInstance(provider, TTSProvider)
+        self.assertEqual(provider.workspace, self.home)
+        self.assertTrue(provider.voice_compatible)
+
+    def test_host_hints_and_role_remain_below_user_preferences(self):
+        provider = self.provider({"voice": "ermil", "yandex": {"role": "good"}})
+        self.assertEqual(provider._client()._options()[1]["_role"], "good")
+        path = self.home / ".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"speech": {"tts": {
+            "default_voice": "marina", "default_emotion": "friendly"}}}))
+        settings, options, _ = provider._client(voice="ermil", model="general", speed=1.1)._options()
+        self.assertEqual((options["default_voice"], options["_role"]), ("marina", "friendly"))
+        self.assertEqual(settings.sources["tts.default_voice"], "config")
+        self.assertEqual(settings.sources["tts.default_emotion"], "config")
+
+    def test_foreign_ambient_defaults_and_credentials_are_not_read(self):
+        with patch.dict(os.environ, {"YANDEX_SPEECH_API_KEY": "foreign-synthetic",
+                                    "HERMES_TTS_VOICE": "ermil",
+                                    "HERMES_TTS_LANG": "de-DE"}):
+            client = self.provider()._client()
+            self.assertEqual(client.api_key, "synthetic")
+            self.assertEqual(client._options()[1]["default_voice"], "alena")
+            self.assertEqual(client._options()[1]["default_lang"], "ru-RU")
+
+    def test_output_extension_and_existing_empty_allocation(self):
+        output = self.home / "speech.mp3"
+        output.touch()
+        provider = self.provider(fake_output=True)
+        result = provider.synthesize("Текст.", str(output), format="mp3", ignored_host_field=True)
+        self.assertEqual(result, str(output))
+        self.assertEqual(output.read_bytes(), b"synthetic adapter payload")
+        other = provider.synthesize("Текст.", str(self.home / "unsupported.flac"), format="flac")
+        self.assertTrue(other.endswith(".wav"))
+        self.assertEqual(self.clients[-1].recorded[1]["format"], "wav")
+
+    def test_nonempty_outputs_and_symlinks_are_preserved_before_requests(self):
+        output = self.home / "speech.mp3"
+        output.write_bytes(b"original")
+        provider = self.provider(fake_output=True)
+        with self.assertRaises(SpeechError):
+            provider.synthesize("Текст.", str(output))
+        link = self.home / "link.mp3"
+        link.symlink_to(output)
+        with self.assertRaises(SpeechError):
+            provider.synthesize("Текст.", str(link))
+        self.assertEqual(output.read_bytes(), b"original")
+        self.assertEqual(self.clients, [])
+
+    def test_an_allocation_populated_during_synthesis_is_not_overwritten(self):
+        output = self.home / "speech.mp3"
+        output.touch()
+        provider = self.provider(fake_output=True)
+        original = provider._client_factory
+        def factory(**kwargs):
+            client = original(**kwargs)
+            synthesize = client.synthesize
+            def race(text, path, **options):
+                output.write_bytes(b"concurrent owner")
+                return synthesize(text, path, **options)
+            client.synthesize = race
+            return client
+        provider._client_factory = factory
+        with self.assertRaises(SpeechError):
+            provider.synthesize("Текст.", str(output))
+        self.assertEqual(output.read_bytes(), b"concurrent owner")
+
+    def test_base_rest_availability_and_pcm_eligibility_are_distinct(self):
+        from yandex_speech.errors import SpeechError
+        with patch("yandex_speech.tts_v3.grpc_sdk",
+                   side_effect=SpeechError("PREREQUISITE", "synthetic missing SDK")):
+            rest = self.provider({"voice": "ermil", "yandex": {"transport": "rest", "api_version": "1"}})
+            self.assertTrue(rest.is_available())
+            self.assertFalse(rest.streams_pcm)
+            grpc = self.provider({"voice": "ermil", "yandex": {"transport": "grpc", "api_version": "3"}})
+            self.assertFalse(grpc.is_available())
+            self.assertFalse(grpc.streams_pcm)
+
+    def test_pcm_client_is_created_before_iteration_and_is_not_shared(self):
+        provider = self.provider({"voice": "ermil"}, fake_output=True)
+        first = provider.stream("Первая.", format="pcm")
+        second = provider.stream("Вторая.", format="pcm")
+        self.assertEqual(len(self.clients), 2)
+        self.assertIsNot(self.clients[0], self.clients[1])
+        self.assertEqual(b"".join(first), b"\0\0")
+        self.assertEqual(b"".join(second), b"\0\0")
+        self.assertEqual(provider.stream_sample_rate, 24000)
+
+    def test_concurrent_sentence_calls_use_distinct_core_clients(self):
+        from concurrent.futures import ThreadPoolExecutor
+        provider = self.provider(fake_output=True)
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            results = list(executor.map(
+                lambda index: provider.synthesize("Фраза.", str(self.home / f"sentence-{index}.mp3")),
+                range(6)))
+        self.assertEqual(len(set(results)), 6)
+        self.assertEqual(len({id(client) for client in self.clients}), 6)
+        self.assertTrue(all(Path(result).read_bytes() == b"synthetic adapter payload" for result in results))
+
+    def test_a_foreign_active_secret_scope_is_rejected_before_secret_lookup(self):
+        from integrations.hermes.provider import profile_secret
+        with patch("agent.secret_scope.current_secret_scope_home", return_value=self.home / "other"):
+            with patch("agent.secret_scope.get_secret_str") as lookup:
+                with self.assertRaises(SpeechError) as error:
+                    profile_secret(self.home, "YANDEX_SPEECH_API_KEY")
+                self.assertEqual(error.exception.category, "AUTH")
+                lookup.assert_not_called()

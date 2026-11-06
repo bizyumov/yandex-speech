@@ -9,6 +9,17 @@ from yandex_speech.media import AudioInputSpec
 from yandex_speech.transcription import SpeechTranscriber
 
 
+def profile_secret(workspace, name):
+    """Resolve only within the provider's owning native profile."""
+    from agent.secret_scope import get_secret_str, current_secret_scope_home
+    from hermes_constants import get_hermes_home
+    scope=current_secret_scope_home()
+    actual=Path(scope) if scope is not None else Path(get_hermes_home())
+    if actual.resolve() != Path(workspace).resolve():
+        raise SpeechError("AUTH","active host secret/profile scope does not match this provider")
+    return get_secret_str(name)
+
+
 def _envelope(result):
     if not result.get("input_complete"):
         return _failure(SpeechError("OUTPUT_PARTIAL","complete addressed input is required"))
@@ -73,13 +84,7 @@ class YandexTranscriptionProvider(TranscriptionProvider):
         self._client_factory=_client_factory
 
     def _scoped_secret(self):
-        from agent.secret_scope import get_secret_str, current_secret_scope_home
-        from hermes_constants import get_hermes_home
-        scope=current_secret_scope_home()
-        actual=Path(scope) if scope is not None else Path(get_hermes_home())
-        if actual.resolve() != self.workspace.resolve():
-            raise SpeechError("AUTH","active host secret/profile scope does not match this provider")
-        return get_secret_str("YANDEX_SPEECH_API_KEY")
+        return profile_secret(self.workspace, "YANDEX_SPEECH_API_KEY")
 
     def _client(self,language=None):
         key=self._secret_resolver()
