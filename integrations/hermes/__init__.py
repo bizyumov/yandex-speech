@@ -11,6 +11,7 @@ if str(_root) not in sys.path:
 def register(ctx):
     from hermes_cli.config import load_config_readonly
     from .provider import YandexTranscriptionProvider
+    from .tts_provider import YandexTTSProvider
     from yandex_speech.errors import SpeechError
     config=load_config_readonly() or {}
     stt=config.get("stt") or {}
@@ -20,4 +21,5 @@ def register(ctx):
     workspace=Path(ctx._manager.home_path)
     provider=YandexTranscriptionProvider(workspace,profile=stt.get("yandex") or {})
     ctx.register_transcription_provider(provider)
+    ctx.register_tts_provider(YandexTTSProvider(workspace,profile=config.get("tts") or {}))
     return provider

@@ -1,6 +1,6 @@
 # Hermes 0.22.5 integration
 
-The optional native plugin lives at integrations/hermes and registers a TranscriptionProvider named yandex. The skill remains the installed discovery entry; the plugin adds a host binding. No productive profile is modified by import/tests.
+The optional native plugin lives at integrations/hermes and registers both a TranscriptionProvider and a TTSProvider named yandex. The skill remains the installed discovery entry; the plugin adds a host binding. No productive profile is modified by import/tests.
 
 For an authorized profile, link its plugin directory entry named yandex-speech to the installed skill's integrations/hermes directory, then enable that plugin through Hermes's normal plugin configuration. Ensure the standard Hermes environment can import the skill and its optional gRPC dependencies. Verify the plugin is loaded in that exact profile before changing its selected STT provider. Example profile settings:
 
@@ -57,3 +57,30 @@ The standard `text_to_speech` tool produces audio. Its `voice_compatible` result
 In Hermes v0.22.5, ordinary automatic speech can use Discord's `play_tts` and its active text-to-voice-channel binding. The queued-first-final path sends text/explicit attachments without that automatic speech step. The runner's separate voice-reply path falls back to an attachment if its raw event lacks server data, even when the session source contains the server identifier. These differences are tracked in [issue #4](https://github.com/bizyumov/yandex-speech/issues/4); do not claim that `/voice all`, a successful file synthesis, or identical final-answer wording repairs them.
 
 For an explicit request to speak, use an available host operation that targets the connected voice channel and verify its playback result. An attachment is a failed speaking attempt. Do not turn one successful plain final into a rule that all final answers speak. A newly constructed runner/adapter in a terminal or execute-code subprocess does not hold the running gateway's connected voice client and cannot be used as that playback operation.
+
+
+## Native Yandex TTS
+
+The same plugin registers file synthesis and an optional 24 kHz mono signed-16-bit little-endian PCM stream. File availability and PCM eligibility are separate: a supported REST file selection remains available without the optional gRPC SDK. PCM requires an eligible v3 voice, compatible settings and the SDK. Each call creates its own core client, so overlapping sentence synthesis does not share mutable synthesis state.
+
+Native profile preferences use the host's normal fields:
+
+```yaml
+tts:
+  provider: yandex
+  voice: ermil
+  model: general
+  speed: 1.0
+  output_format: mp3
+  yandex:
+    language: ru-RU
+    role: good
+    api_version: auto
+    transport: auto
+```
+
+The active workspace's user-file TTS preferences remain above native voice/model/speed hints. The native role supplies the default-emotion layer, so a user-file emotion or role retains priority. Literal Ermil/Good is preserved; Friendly belongs to voices that support it. Legacy voice/language aliases are resolved in the owning profile, rather than taken from another profile's ambient process environment. Credentials resolve synchronously in that same owning scope before an audio worker starts.
+
+Native file requests map host ogg/opus to SpeechKit oggopus and return a path with the actual container extension. An unsupported native file format uses WAV and a .wav path. A nonempty file or symlink is refused before synthesis. An existing empty host allocation is left untouched: the adapter publishes a unique completed sibling and returns its actual path, as the native caller contract permits. Absent destinations also publish without clobbering. A changed or populated allocation detected before publication fails and retains the owned staged audio. A writer arriving after the last check keeps its original inode because the adapter never enables overwrite. Incomplete multipart evidence remains retained by its owning synthesis operation. These adapter checks do not certify delivery to a messenger or playback in a connected channel.
+
+A same-name `tts.providers.yandex` command entry still takes precedence over native registration. Reconcile it through the scoped setup workflow before selecting native Yandex TTS. Compatibility wrappers remain available. Raw XML SSML remains an explicit skill CLI/Python v1 operation because the ordinary host text cleaner is not a raw-XML route.

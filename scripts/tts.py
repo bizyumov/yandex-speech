@@ -36,12 +36,14 @@ class TtsError(SpeechError):
 
 class TextToSpeech:
     def __init__(self, api_key: str | None = None, folder_id: str | None = None,
-                 *, _context=None, _adapter_defaults=None) -> None:
-        self.api_key = api_key or os.getenv("YANDEX_SPEECH_API_KEY")
-        self.folder_id = folder_id or os.getenv("YANDEX_CLOUD_FOLDER_ID")
+                 *, _context=None, _adapter_defaults=None, _environment=None) -> None:
+        self.environment = os.environ if _environment is None else dict(_environment)
+        self.api_key = api_key or self.environment.get("YANDEX_SPEECH_API_KEY")
+        self.folder_id = folder_id or self.environment.get("YANDEX_CLOUD_FOLDER_ID")
         self.context = _context
         self.adapter_defaults = _adapter_defaults or {}
-        self.settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults)
+        self.settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
+                                         _environment=self.environment)
         if not self.api_key:
             raise TtsError("YANDEX_SPEECH_API_KEY is required",category="AUTH")
 
@@ -62,7 +64,7 @@ class TextToSpeech:
             ("unsafe_mode",unsafe_mode),("sample_rate_hertz",sample_rate),("volume",volume),
             ("pitch_shift",pitch_shift),("duration_ms",duration_ms),("duration_policy",duration_policy)] if value is not None}
         settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
-                                    _explicit={"tts":values})
+                                    _explicit={"tts":values}, _environment=self.environment)
         from yandex_speech.tts_voices import resolve_voice, select_version
         options = resolve_voice(settings.value("tts"), settings.sources)
         version=select_version(options)
