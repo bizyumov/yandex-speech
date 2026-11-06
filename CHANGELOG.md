@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Add active-profile native speech enrollment preview/apply, protected canonical-command migration, explicit streaming selection and installed-wheel plugin discovery.
+
 - Register paired native Hermes STT/TTS providers with profile-scoped defaults/secrets, per-call synthesis clients, protected actual output paths and eligible 24 kHz PCM streaming.
 
 - Preserve native pronunciation controls, stressed words and internal pause context across file/duration/streaming request boundaries; reject oversized indivisible controls.

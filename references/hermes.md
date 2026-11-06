@@ -84,3 +84,27 @@ The active workspace's user-file TTS preferences remain above native voice/model
 Native file requests map host ogg/opus to SpeechKit oggopus and return a path with the actual container extension. An unsupported native file format uses WAV and a .wav path. A nonempty file or symlink is refused before synthesis. An existing empty host allocation is left untouched: the adapter publishes a unique completed sibling and returns its actual path, as the native caller contract permits. Absent destinations also publish without clobbering. A changed or populated allocation detected before publication fails and retains the owned staged audio. A writer arriving after the last check keeps its original inode because the adapter never enables overwrite. Incomplete multipart evidence remains retained by its owning synthesis operation. These adapter checks do not certify delivery to a messenger or playback in a connected channel.
 
 A same-name `tts.providers.yandex` command entry still takes precedence over native registration. Reconcile it through the scoped setup workflow before selecting native Yandex TTS. Compatibility wrappers remain available. Raw XML SSML remains an explicit skill CLI/Python v1 operation because the ordinary host text cleaner is not a raw-XML route.
+
+
+## Scoped native enrollment
+
+Run the helper in the intended active Hermes profile. It uses that profile's config and workspace, never another profile's credentials. Preview first, then explicitly apply the same enrollment:
+
+```bash
+python /absolute/skill/scripts/speech_setup.py --hermes-plan
+python /absolute/skill/scripts/speech_setup.py --hermes-apply
+python /absolute/skill/scripts/speech_setup.py --check
+```
+
+The preview shows selected non-secret changes and the plugin link, without writing config, backups, credentials or files. Apply uses Hermes's native configuration writer, verifies the saved result and preserves unrelated values/comments. A second equivalent apply is a no-op. The native plugin manifest is included beside its Python modules in the wheel as well as the installed skill projection, so enrollment works outside the source checkout.
+
+Recognized canonical Yandex commands migrate their literal voice/language/role/model choices into native defaults without executing those commands. The workspace user file retains priority. Unknown commands, opaque environment prefixes, unknown input placeholders, incompatible defaults, redirected plugin directories and different existing plugin installations fail before mutation. Configuration aliases crossing changed settings are refused because the native round-trip writer can otherwise update an unrelated alias; separate those aliases before enrollment. Existing wrappers remain installed.
+
+Streaming is enrolled only when explicitly selected and locally eligible:
+
+```bash
+python /absolute/skill/scripts/speech_setup.py --hermes-plan --enable-stt-streaming --enable-tts-pcm
+python /absolute/skill/scripts/speech_setup.py --hermes-apply --enable-stt-streaming --enable-tts-pcm
+```
+
+The PCM selection is pinned to `tts.streaming.provider: yandex`; an existing different selection is otherwise retained. Native enrollment does not create keys, rewrite .env, install SDKs, copy another profile or restart a gateway. Local availability checks do not prove API execution, a loaded live gateway, actual source ingress, messenger delivery or channel playback. Real source/host activation remains a separate verified step. `--config` and `--probe-audio` belong to standalone checks and cannot be combined with native enrollment.
