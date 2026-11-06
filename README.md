@@ -64,3 +64,5 @@ python -m build --no-isolation
 ```
 
 Run verification from the checkout. Provider/host acceptance requires explicit synthetic fixtures and authorized credentials; ordinary CI makes no provider calls. See [acceptance coverage](tests/acceptance.json). Synthesis supports REST v1/v3 files, gRPC v3 files and incremental PCM, v1 SSML, explicit LiveTTS and complete multipart output; see [synthesis commands and controls](references/synthesis-provider-testing.md). Later scope includes full REST/storage recognition fallback, account/key creation, complete spoken-turn controls/playback and public rollout. [Changelog](CHANGELOG.md), [MIT license](LICENSE).
+
+Speech quality and voice selection: [v1 SSML, v3 general/LiveTTS voices and pronunciation](references/synthesis-provider-testing.md).

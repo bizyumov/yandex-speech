@@ -7,6 +7,10 @@ description: Transcribe recorded or arriving audio with Yandex SpeechKit, export
 
 This skill supplies speech-transcription and the existing speech-synthesis entry points. Hermes is an optional host adapter. Phase 1 implements gRPC v3 recorded/arriving recognition, durable recovery, automatic media preparation and native Hermes STT. REST v1/v3 complete-file synthesis, explicit LiveTTS, v1 SSML and gRPC incremental PCM synthesis are implemented; generation, file delivery and speaking acceptance are distinct. Full spoken-turn controls/playback and public rollout remain separate.
 
+## Speech quality and voice choice
+
+Use the [synthesis guide](references/synthesis-provider-testing.md) to choose REST v1 SSML or gRPC v3 general/LiveTTS voices, pronounce terms, place stress marks and preserve voice-specific roles. Ermil's good role is distinct from friendly. Keep API success, acoustic quality, a voice attachment and speaking in a channel as separate outcomes.
+
 ## Route ordinary voice replies first
 
 1. First distinguish sending text, sending a voice message/attachment, and speaking in the connected voice channel. For a voice-message/attachment request, use the standard `text_to_speech` tool and native message delivery. For an explicit request to speak, use the running host's voice-channel playback path and verify speaking; a file is not successful speaking. Hermes 0.22.5 has queued/event-context routing limitations described in [the delivery contract](references/hermes.md#sending-text-sending-voice-and-speaking). Distinguish an ordinary audio attachment, a native voice message and live voice-channel playback: producing one does not satisfy an explicit request for another. Do not infer live-channel intent merely because the user rejects a file attachment. Do not turn an ordinary reply into provider readiness checks, CLI invocations or manually written text files.
@@ -42,6 +46,19 @@ See [synthesis provider testing](references/synthesis-provider-testing.md) for L
 ## Diagnostic handoffs and deferred work
 
 For a requested developer handoff, read the existing synthesis issue/specification and map the observed tests against its acceptance criteria. Mark untested work explicitly; do not close an implementation criterion from a few provider samples. Store session working documents in the existing project folder of the agent workspace, not the installed/shared skill repository, unless product-repository publication was explicitly requested. Publishing an issue comment does not authorize staging the local report in the product repository. Sanitize public comments separately, excluding local paths, private session/account/request identifiers and operational payloads. Read back the exact published issue/comment before reporting success. A registration-only or deferred issue request does not authorize implementation or live configuration changes.
+
+## Long meetings and monologues
+
+Native server streaming is a required pre-release STT capability tracked in
+[#37](https://github.com/bizyumov/yandex-speech/issues/37). The current
+240-second stream handles one bounded utterance; do not advertise it as a
+complete continuous meeting recorder. Source audio must reach the native
+provider while captured, with correct finalization, connection renewal,
+recovery and transcript continuity. Use the
+[recording/streaming guide](references/transcription.md#required-continuous-server-streaming)
+to distinguish this from recorded-file recognition. Investigated settings,
+existing short-stream tests and actual long-session support are different
+evidence; do not change unrelated busy-message or notification options.
 
 ## Commands
 
