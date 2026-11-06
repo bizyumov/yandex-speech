@@ -60,7 +60,9 @@ class ProgressiveSynthesisTests(unittest.TestCase):
             self.assertEqual(first,b"\0\0\1\0")
             continue_text.set()
             rest=b"".join(stream)
-            self.assertEqual(rest,b"\0\0\1\0")
+            self.assertTrue(rest)
+            acknowledgements=sum(r.HasField("force_synthesis") for r in transport.requests)
+            self.assertEqual(first+rest,b"\0\0\1\0"*acknowledgements)
             self.assertTrue(stream.input_complete)
         self.assertEqual(transport.requests[0].options.voice,"sergey")
         self.assertEqual(transport.requests[0].options.output_audio_spec.raw_audio.sample_rate_hertz,24000)
@@ -201,6 +203,47 @@ class NativeMarkupStreamTests(unittest.TestCase):
         from yandex_speech.tts_stream import AudioStream
         transport = Transport()
         with AudioStream(iter(["[[" + "m " * 2600 + "]]"]), transport, options()) as stream:
+            with self.assertRaises(SpeechError) as error:
+                b"".join(stream)
+            self.assertEqual(error.exception.category, "LIMIT")
+
+class IncrementalNativeMarkupTests(unittest.TestCase):
+    def test_a_later_pause_keeps_its_left_context_even_after_delay(self):
+        from yandex_speech.tts_stream import AudioStream
+        def source():
+            yield "Стоп! "
+            time.sleep(.7)
+            yield "sil<[300]> Подумай. "
+        transport = Transport()
+        with AudioStream(source(), transport, options()) as stream:
+            b"".join(stream)
+            self.assertTrue(stream.input_complete)
+        texts = [r.synthesis_input.text for r in transport.requests
+                 if r.HasField("synthesis_input")]
+        self.assertTrue(any("Стоп! sil<[300]> Подумай." in text for text in texts), texts)
+
+    def test_an_opener_split_at_the_rpc_boundary_stays_intact(self):
+        from yandex_speech.tts_stream import AudioStream
+        text = "a" * 4999 + "[[m ə l ɐ k o]] конец. "
+        transport = Transport()
+        with AudioStream(iter([text[:5000], text[5000:]]), transport, options()) as stream:
+            b"".join(stream)
+            self.assertTrue(stream.input_complete)
+        texts = [r.synthesis_input.text for r in transport.requests
+                 if r.HasField("synthesis_input")]
+        self.assertEqual("".join(texts), text)
+        self.assertTrue(any("[[m ə l ɐ k o]]" in value for value in texts))
+
+    def test_a_late_stress_mark_does_not_corrupt_an_oversized_word(self):
+        from yandex_speech.tts_stream import AudioStream
+        with AudioStream(iter(["я" * 5000, "+а конец. "]), Transport(), options()) as stream:
+            with self.assertRaises(SpeechError) as error:
+                b"".join(stream)
+            self.assertEqual(error.exception.category, "LIMIT")
+
+    def test_ambiguous_unfinished_lexical_buffer_is_bounded(self):
+        from yandex_speech.tts_stream import AudioStream
+        with AudioStream(iter(["я" * 5000] * 5), Transport(), options()) as stream:
             with self.assertRaises(SpeechError) as error:
                 b"".join(stream)
             self.assertEqual(error.exception.category, "LIMIT")

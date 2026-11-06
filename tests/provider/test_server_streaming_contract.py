@@ -16,6 +16,26 @@ from yandex_speech.grpc_stt import GrpcTransport, build_stream_options, sdk
 from yandex_speech.results import event_dict
 
 
+def assert_word_timing(finals, duration_ms):
+    """Require usable provider word positions, not protobuf's numeric defaults."""
+    import math
+    for value in finals.values():
+        previous = -1.0
+        words = value.get("words", [])
+        if not words:
+            raise AssertionError("spoken raw finals lack genuine word timing")
+        for word in words:
+            try:
+                start = float(word["start_time_ms"])
+                end = float(word["end_time_ms"])
+            except (KeyError, TypeError, ValueError):
+                raise AssertionError("provider word timing is absent or invalid") from None
+            if not (math.isfinite(start) and math.isfinite(end)
+                    and 0 <= start < end <= duration_ms and previous <= start):
+                raise AssertionError("provider word timing is not meaningful, ordered and audio-bounded")
+            previous = start
+
+
 @unittest.skipUnless(os.environ.get("YANDEX_SPEECH_LIVE_TESTS") == "1",
                      "explicit synthetic provider opt-in required")
 class ServerStreamingContractTests(unittest.TestCase):
@@ -37,6 +57,7 @@ class ServerStreamingContractTests(unittest.TestCase):
             options.session_options.recognition_model.audio_processing_type = (
                 p.RecognitionModelOptions.FULL_DATA)
         drained = threading.Event()
+        last_audio_started = threading.Event()
         sent = 0
         started = time.monotonic()
 
@@ -45,6 +66,8 @@ class ServerStreamingContractTests(unittest.TestCase):
             yield options
             for offset in range(0, len(pcm), 3200):
                 packet = pcm[offset:offset + 3200]
+                if offset + len(packet) == len(pcm):
+                    last_audio_started.set()
                 yield p.StreamingRequest(chunk=p.AudioChunk(data=packet))
                 sent += len(packet)
                 target = started + sent / 32000
@@ -61,7 +84,7 @@ class ServerStreamingContractTests(unittest.TestCase):
             for response in call:
                 item = event_dict(response)
                 events.append(item)
-                if not drained.is_set() and ("partial" in item or "final" in item):
+                if not last_audio_started.is_set() and ("partial" in item or "final" in item):
                     before_eof += 1
         finally:
             transport.close()
@@ -106,12 +129,7 @@ class ServerStreamingContractTests(unittest.TestCase):
         spoken_finals = {i: value for i, value in finals.items()
                          if value.get("text", "").strip()}
         self.assertTrue(spoken_finals, "server finals contain no speech")
-        self.assertTrue(all(v.get("words") for v in spoken_finals.values()),
-                        "spoken raw finals lack genuine word timing")
-        for value in finals.values():
-            for word in value["words"]:
-                self.assertLessEqual(float(word.get("start_time_ms", 0)),
-                                     float(word.get("end_time_ms", 0)))
+        assert_word_timing(spoken_finals, len(pcm) / 32)
         text = " ".join(refined[i].get("text", "") for i in sorted(refined)).casefold()
         self.assertEqual(text.count("контрольный хвост"), 2,
                          "the complete repeated synthetic tail was not retained twice")
@@ -127,3 +145,4 @@ class ServerStreamingContractTests(unittest.TestCase):
 
     def test_full_data_constraints_are_measured_separately(self):
         self._probe(external=False, full_data=True)
+

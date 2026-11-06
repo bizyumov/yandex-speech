@@ -56,13 +56,21 @@ def native_spans(text, *, complete=True):
         if not (pause or accented or index in pending):
             continue
         left = next((tokens[i] for i in range(index - 1, -1, -1)
-                     if i not in controls), None) if pause or index in pending else None
+                     if i not in controls and any(c.isalnum() for c in tokens[i][0])), None) if pause or index in pending else None
         right = next((tokens[i] for i in range(index + 1, len(tokens))
-                      if i not in controls), None)
+                      if i not in controls and any(c.isalnum() for c in tokens[i][0])), None)
         start = left.start() if left is not None else token.start()
         end = right.end() if right is not None else (
             len(text) + 1 if not complete else token.end())
         spans.append((start, end))
+    if not complete and tokens:
+        spoken = [token for i, token in enumerate(tokens)
+                  if i not in controls and any(c.isalnum() for c in token[0])]
+        tail = spoken[-1] if spoken else tokens[-1]
+        start = tail.start()
+        if tail[0] in {"s", "si", "sil"} and len(spoken) > 1:
+            start = spoken[-2].start()
+        spans.append((start, len(text) + 1))
     merged = []
     for start, end in sorted(spans):
         if merged and start < merged[-1][1]:

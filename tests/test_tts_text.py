@@ -52,6 +52,15 @@ class NativeMarkupBoundaryTests(unittest.TestCase):
             self.assertEqual("".join(parts), text)
             self.assertTrue(any(group in part for part in parts), parts)
 
+    def test_punctuation_is_not_a_spoken_pause_neighbor(self):
+        from yandex_speech.tts_text import partition_plain
+        for text, limit in [("Стоп! sil<[300]> — Подумай.", 20),
+                            ("Стоп! — sil<[300]> Подумай.", 22)]:
+            with self.subTest(text=text):
+                with self.assertRaises(SpeechError) as error:
+                    partition_plain(text, lambda value: len(value) <= limit)
+                self.assertEqual(error.exception.category, "LIMIT")
+
     def test_duration_bisection_preserves_native_blocks_and_pause_context(self):
         from yandex_speech.tts_text import bisect_text
         for block in ["[[m ə l ɐ k o]]", "Стоп! sil<[300]> Подумай.",
