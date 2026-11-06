@@ -4,6 +4,9 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Preserve native pronunciation controls, stressed words and internal pause context across file/duration/streaming request boundaries; reject oversized indivisible controls.
+- Add opt-in synthetic evidence for server/default and external EOU, word timing, literary refinement correlation and final drain; measure FULL_DATA separately.
+
 - Add synthesis API v3 REST/gRPC complete files, explicit LiveTTS model/voices, direct MP3, WAV length finalization, structural v1 SSML, safe long-text assembly and incremental 24 kHz gRPC PCM.
 
 - Establish the 0.1.0 development baseline: MIT, skill documentation, optional dependency profiles, HOME/workspace configuration and acceptance coverage.

@@ -25,6 +25,77 @@ def v1_fits(text,options):
     return len(text)<=5000 and len(urlencode(v1_form(text,options)).encode("utf-8"))<=15000
 
 
+def native_spans(text, *, complete=True):
+    """Indivisible native controls, including the spoken context of pauses."""
+    tokens = list(re.finditer(
+        r"\[\[.*?(?:\]\]|$)|\*\*.*?(?:\*\*|$)|(?:sil)?<\[.*?(?:\]>|$)|(?:(?!\[\[|\*\*|(?:sil)?<\[)\S)+",
+        text, re.S))
+    spans = []
+    controls = set()
+    pending = set()
+    for index, token in enumerate(tokens):
+        value = token[0]
+        closing = "]]" if value.startswith("[[") else (
+            "**" if value.startswith("**") else "]>" if "<[" in value else None)
+        if closing is not None:
+            if not value.endswith(closing) or len(value) <= len(closing):
+                if complete:
+                    raise SpeechError("CONFIG", "close the native pronunciation control before synthesis")
+                pending.add(index)
+            spans.append((token.start(), len(text) + 1 if index in pending else token.end()))
+        if value.startswith(("<[", "sil<[")):
+            controls.add(index)
+        if "+" in value and closing is None:
+            spans.append((token.start(), token.end()))
+    for index in controls:
+        token = tokens[index]
+        value = token[0]
+        pause = value.startswith("sil<[") or value in {
+            "<[tiny]>", "<[small]>", "<[medium]>", "<[large]>", "<[huge]>"}
+        accented = value == "<[accented]>"
+        if not (pause or accented or index in pending):
+            continue
+        left = next((tokens[i] for i in range(index - 1, -1, -1)
+                     if i not in controls and any(c.isalnum() for c in tokens[i][0])), None) if pause or index in pending else None
+        right = next((tokens[i] for i in range(index + 1, len(tokens))
+                      if i not in controls and any(c.isalnum() for c in tokens[i][0])), None)
+        start = left.start() if left is not None else token.start()
+        end = right.end() if right is not None else (
+            len(text) + 1 if not complete else token.end())
+        spans.append((start, end))
+    if not complete and tokens:
+        spoken = [token for i, token in enumerate(tokens)
+                  if i not in controls and any(c.isalnum() for c in token[0])]
+        tail = spoken[-1] if spoken else tokens[-1]
+        start = tail.start()
+        prefix = re.search(r"(?:sil(?:<\[?)?|si|s|<|\[|\*)$", text.rstrip())
+        if prefix is not None:
+            token = tokens[-1]
+            before_prefix = text[token.start():prefix.start()]
+            if not any(c.isalnum() for c in before_prefix):
+                previous = [item for item in spoken if item.end() <= token.start()]
+                if previous:
+                    start = previous[-1].start()
+        spans.append((start, len(text) + 1))
+    merged = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def native_boundary(text, maximum, *, complete=True):
+    """Return a fitting cut that never bisects a native pronunciation unit."""
+    spans = native_spans(text, complete=complete)
+    count = _boundary(text, min(maximum, len(text)))
+    for start, end in reversed(spans):
+        if start < count < end:
+            count = start
+    return count
+
+
 def _boundary(text,maximum):
     if maximum>=len(text):
         return len(text)
@@ -32,11 +103,13 @@ def _boundary(text,maximum):
     return matches[-1].end() if matches and matches[-1].end()>0 else maximum
 
 
-def partition_plain(text,fits):
+def iter_plain_parts(text, fits, *, check=lambda: None):
+    """Prepare one proven packet at a time, checking owned cancellation."""
+    check()
     if not isinstance(text,str) or not text.strip():
         raise SpeechError("CONFIG","synthesis input must contain speakable text")
-    parts=[]
     while text:
+        check()
         low,high,best=1,len(text),0
         while low<=high:
             middle=(low+high)//2
@@ -46,18 +119,29 @@ def partition_plain(text,fits):
                 high=middle-1
         if best==0:
             raise SpeechError("LIMIT","a minimum text fragment exceeds the selected request budget")
-        count=_boundary(text,best)
-        parts.append(text[:count])
+        count=native_boundary(text,best)
+        check()
+        if count == 0:
+            raise SpeechError("LIMIT", "an indivisible pronunciation control and its spoken context "
+                              "exceed the selected request budget; shorten that unit or select a larger route")
+        yield text[:count]
         text=text[count:]
-    return parts
+
+
+def partition_plain(text,fits):
+    return list(iter_plain_parts(text,fits))
 
 
 def bisect_text(text):
     if len(text)<=1:
         raise SpeechError("LIMIT","minimum utterance still exceeds the provider duration budget")
-    at=_boundary(text,len(text)//2)
-    if at<=0 or at>=len(text):
-        at=len(text)//2
+    at=native_boundary(text,len(text)//2)
+    if at == 0:
+        ends = [end for _, end in native_spans(text) if 0 < end < len(text)]
+        at = min(ends) if ends else 0
+    if not 0 < at < len(text):
+        raise SpeechError("LIMIT", "an indivisible pronunciation unit exceeds the provider duration "
+                          "budget; shorten the unit or adjust the selected synthesis route")
     return text[:at],text[at:]
 
 def validate_ssml(text):

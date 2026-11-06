@@ -223,3 +223,18 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(result["status"], "no_speech")
         self.assertTrue(result["input_complete"])
         self.assertEqual(rpc.calls, 0)
+
+class ProviderWordTimingTests(unittest.TestCase):
+    def test_rejects_missing_defaulted_nonfinite_reversed_and_unbounded_word_times(self):
+        from tests.provider.test_server_streaming_contract import assert_word_timing
+        for words in [[{}], [{"start_time_ms": 0, "end_time_ms": 0}],
+                      [{"start_time_ms": float("nan"), "end_time_ms": 100}],
+                      [{"start_time_ms": 50, "end_time_ms": 25}],
+                      [{"start_time_ms": 0, "end_time_ms": 1001}],
+                      [{"start_time_ms": 100, "end_time_ms": 200},
+                       {"start_time_ms": 50, "end_time_ms": 90}]]:
+            with self.subTest(words=words):
+                with self.assertRaises(AssertionError):
+                    assert_word_timing({0: {"words": words}}, 1000)
+        assert_word_timing({0: {"words": [{"start_time_ms": 0, "end_time_ms": 100},
+                                        {"start_time_ms": 150, "end_time_ms": 250}]}}, 1000)
