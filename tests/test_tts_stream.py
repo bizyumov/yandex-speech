@@ -165,3 +165,42 @@ class ProgressiveSynthesisTests(unittest.TestCase):
             with stream:next(stream)
         self.assertEqual(cm.exception.category,"TIMEOUT")
         self.assertLess(time.monotonic()-started,1)
+
+class NativeMarkupStreamTests(unittest.TestCase):
+    def test_fragmented_native_controls_reach_one_synthesis_input(self):
+        from yandex_speech.tts_stream import AudioStream
+        for fragments, protected in [
+            (["Начало [[m ə ", "l ɐ k o]] конец. "], "[[m ə l ɐ k o]]"),
+            (["Стоп! sil<[", "300]> Подумай. "], "Стоп! sil<[300]> Подумай."),
+            (["Начало <[acc", "ented]> важное слово. "], "<[accented]> важное"),
+        ]:
+            with self.subTest(protected=protected):
+                transport = Transport()
+                with AudioStream(iter(fragments), transport, options()) as stream:
+                    b"".join(stream)
+                    self.assertTrue(stream.input_complete)
+                texts = [r.synthesis_input.text for r in transport.requests
+                         if r.HasField("synthesis_input")]
+                self.assertEqual("".join(texts), "".join(fragments))
+                self.assertTrue(any(protected in text for text in texts), texts)
+
+    def test_rpc_rollover_keeps_a_pause_and_its_neighbors_together(self):
+        from yandex_speech.tts_stream import AudioStream
+        group = "Стоп! sil<[300]> Подумай."
+        text = "а" * 4980 + ". " + group + " Хвост."
+        transport = Transport()
+        with AudioStream(iter([text]), transport, options()) as stream:
+            b"".join(stream)
+            self.assertTrue(stream.input_complete)
+        texts = [r.synthesis_input.text for r in transport.requests
+                 if r.HasField("synthesis_input")]
+        self.assertEqual("".join(texts), text)
+        self.assertTrue(any(group in value for value in texts), texts[-3:])
+
+    def test_stream_rejects_oversized_phoneme_block(self):
+        from yandex_speech.tts_stream import AudioStream
+        transport = Transport()
+        with AudioStream(iter(["[[" + "m " * 2600 + "]]"]), transport, options()) as stream:
+            with self.assertRaises(SpeechError) as error:
+                b"".join(stream)
+            self.assertEqual(error.exception.category, "LIMIT")

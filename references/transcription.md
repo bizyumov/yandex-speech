@@ -98,3 +98,18 @@ Recorded files retain the appropriate asynchronous/native-container route.
 [Streaming contract](https://aistudio.yandex.ru/en/docs/speechkit/stt/streaming) ·
 [v3 request/events](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/grpc/Recognizer/recognizeStreaming) ·
 [Service limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits).
+
+
+### Measured server prerequisite — 2026-11-06
+
+The opt-in `tests.provider.test_server_streaming_contract` suite passed three synthetic cases against the managed TLS endpoint with yandexcloud 0.412.0 and grpcio 1.84.1. REAL_TIME with both server/default EOU and external EOU produced recognition observations while audio was still arriving. Spoken raw finals contained genuine word timings; literary refinements correlated by final index and retained both repeated control tails. Empty finals on silence also correlated and are not speech-bearing transcript entries. The complete input iterator drained and the response stream ended normally in all three cases.
+
+FULL_DATA was measured separately: the server returned final/refined results after input ended, with no progressive recognition observation in that run. It is not substituted for REAL_TIME capture. These short contract results satisfy a prerequisite for the continuous implementation; they do not establish rolling-window recovery, hour-long continuity or an actual Hermes/Discord consuming path.
+
+Reproduce only with explicit synthetic-provider opt-in, existing authorized credentials and reviewed fixtures:
+
+```bash
+YANDEX_SPEECH_LIVE_TESTS=1 python -m unittest tests.provider.test_server_streaming_contract -v
+```
+
+Supply the existing provider suite's `YANDEX_SPEECH_TEST_FIXTURE_DIR` and optional `YANDEX_SPEECH_TEST_OUTPUT_DIR`. The latter receives unique run directories with sanitized event/timing counts and installed SDK versions. No credentials or transcript text are written to those summaries.

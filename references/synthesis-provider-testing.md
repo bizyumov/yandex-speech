@@ -261,3 +261,10 @@ with `YANDEX_SPEECH_LIVE_TESTS=1`; the configured-host check additionally
 requires `YANDEX_SPEECH_HOST_TESTS=1`. They run as the active profile's Unix
 owner with its own authorized credential projection. A provider/host omission
 is pending evidence, never an acceptance pass.
+
+
+## Native markup at synthesis boundaries
+
+Plain-text file synthesis and incremental PCM synthesis preserve complete native phoneme blocks, emphasized spans, accented words and words containing stress marks when partitioning requests. Internal explicit/contextual pauses stay with their spoken neighbors, so partitioning does not turn them into ignored leading/trailing pause cues. The same protection applies when a file request must be bisected after a provider duration-limit response and when a streaming RPC reaches its text budget.
+
+An indivisible control plus its required spoken context that exceeds the selected request budget fails with a LIMIT diagnostic. Shorten that unit or select an eligible larger-budget route; the skill does not strip its markup. Stream fragments may divide a control's syntax: the parser buffers incomplete controls until they can be sent intact. Unclosed markup at the end of input fails rather than being silently forwarded as a truncated pronunciation instruction. These are request-preservation guarantees; acoustic/listener review remains separate.

@@ -6,6 +6,7 @@ import time
 
 from .errors import SpeechError
 from .tts_v3 import grpc_sdk
+from .tts_text import native_boundary
 
 _END=object()
 
@@ -93,8 +94,15 @@ class AudioStream:
                 self._check()
                 if not isinstance(fragment,str):
                     raise SpeechError("CONFIG","text fragments must be strings")
-                for start in range(0,len(fragment),5000):
-                    self._put(self._text_queue,fragment[start:start+5000])
+                while len(fragment)>5000:
+                    n=native_boundary(fragment,5000,complete=False)
+                    if not n:
+                        raise SpeechError("LIMIT","an indivisible pronunciation unit exceeds "
+                                          "the 5000-character stream request budget")
+                    self._put(self._text_queue,fragment[:n])
+                    fragment=fragment[n:]
+                if fragment:
+                    self._put(self._text_queue,fragment)
             self._put(self._text_queue,_END)
         except Exception as error:
             self._fail(error if isinstance(error,SpeechError) else SpeechError("CONFIG","text source failed"))
@@ -104,21 +112,27 @@ class AudioStream:
             text=self._remainder;self._remainder="";return text
         while True:
             self._check()
-            match=re.search(r"(?<=[.!?;:])\s+|\n",self._buffer)
-            if match:
-                n=match.end();text=self._buffer[:n];self._buffer=self._buffer[n:];return text
+            for match in re.finditer(r"(?<=[.!?;:])\s+|\n",self._buffer):
+                n=native_boundary(self._buffer,match.end(),complete=self._source_eof)
+                if n:
+                    text=self._buffer[:n];self._buffer=self._buffer[n:];return text
             if len(self._buffer)>=5000:
-                n=self._buffer.rfind(" ",0,5000)+1
-                if not n:n=5000
+                n=native_boundary(self._buffer,5000,complete=self._source_eof)
+                if not n:
+                    raise SpeechError("LIMIT","an indivisible pronunciation unit exceeds "
+                                      "the 5000-character stream request budget")
                 text=self._buffer[:n];self._buffer=self._buffer[n:];return text
             if self._source_eof:
                 if self._buffer:
-                    text=self._buffer;self._buffer="";return text
+                    n=native_boundary(self._buffer,len(self._buffer))
+                    text=self._buffer[:n];self._buffer=self._buffer[n:];return text
                 return None
             if self._buffer and time.monotonic()-self._last_text>=.5:
                 boundaries=list(re.finditer(r"\s+",self._buffer))
                 if boundaries:
-                    n=boundaries[-1].end();text=self._buffer[:n];self._buffer=self._buffer[n:];return text
+                    n=native_boundary(self._buffer,boundaries[-1].end(),complete=False)
+                    if n:
+                        text=self._buffer[:n];self._buffer=self._buffer[n:];return text
             try:fragment=self._text_queue.get(timeout=.02)
             except queue.Empty:continue
             if fragment is _END:self._source_eof=True
@@ -133,9 +147,10 @@ class AudioStream:
             self._check()
             available=5000-used
             if len(text)>available:
-                n=text.rfind(" ",0,available)+1
-                if not n:n=available
+                n=native_boundary(text,available)
                 self._remainder=text[n:]
+                if not n:
+                    break
                 text=text[:n]
             if text:
                 receipt["speech"] = receipt["speech"] or bool(text.strip())
