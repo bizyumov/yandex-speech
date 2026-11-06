@@ -23,6 +23,9 @@ yandex-speech-check = "yandex_speech.readiness:main"
 [tool.setuptools.dynamic]
 version = {file = ["VERSION"]}
 
+[tool.setuptools.package-data]
+"integrations.hermes" = ["plugin.yaml"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["yandex_speech*", "scripts*", "integrations*"]
