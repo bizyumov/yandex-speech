@@ -247,3 +247,38 @@ class IncrementalNativeMarkupTests(unittest.TestCase):
             with self.assertRaises(SpeechError) as error:
                 b"".join(stream)
             self.assertEqual(error.exception.category, "LIMIT")
+
+    def test_partial_pause_prefixes_with_punctuation_keep_spoken_context(self):
+        from yandex_speech.tts_stream import AudioStream
+        for prefix, rest in [("Стоп! sil<", "[300]> Подумай. "),
+                             ("Стоп! (sil", "<[300]> Подумай. "),
+                             ("Стоп! «sil", "<[300]> Подумай. ")]:
+            with self.subTest(prefix=prefix):
+                transport = Transport()
+                with AudioStream(iter([prefix, rest]), transport, options()) as stream:
+                    b"".join(stream)
+                    self.assertTrue(stream.input_complete)
+                texts = [r.synthesis_input.text for r in transport.requests
+                         if r.HasField("synthesis_input")]
+                self.assertTrue(any(prefix+rest.strip() in text for text in texts), texts)
+
+    def test_a_packet_terminating_pending_context_is_consumed_incrementally(self):
+        from yandex_speech.tts_stream import AudioStream
+        fragments = ["я"*5001, " конец. "*625]
+        transport = Transport()
+        with AudioStream(iter(fragments), transport, options()) as stream:
+            self.assertTrue(b"".join(stream))
+            self.assertTrue(stream.input_complete)
+        text = "".join(r.synthesis_input.text for r in transport.requests
+                       if r.HasField("synthesis_input"))
+        self.assertEqual(text, "".join(fragments))
+
+    def test_known_complete_long_plain_text_keeps_ordinary_partitioning(self):
+        from yandex_speech.tts_stream import AudioStream
+        text = "я"*10001
+        transport = Transport()
+        with AudioStream(text, transport, options()) as stream:
+            self.assertTrue(b"".join(stream))
+            self.assertTrue(stream.input_complete)
+        self.assertEqual("".join(r.synthesis_input.text for r in transport.requests
+                                if r.HasField("synthesis_input")), text)

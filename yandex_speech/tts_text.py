@@ -68,8 +68,14 @@ def native_spans(text, *, complete=True):
                   if i not in controls and any(c.isalnum() for c in token[0])]
         tail = spoken[-1] if spoken else tokens[-1]
         start = tail.start()
-        if tail[0] in {"s", "si", "sil"} and len(spoken) > 1:
-            start = spoken[-2].start()
+        prefix = re.search(r"(?:sil(?:<\[?)?|si|s|<|\[|\*)$", text.rstrip())
+        if prefix is not None:
+            token = tokens[-1]
+            before_prefix = text[token.start():prefix.start()]
+            if not any(c.isalnum() for c in before_prefix):
+                previous = [item for item in spoken if item.end() <= token.start()]
+                if previous:
+                    start = previous[-1].start()
         spans.append((start, len(text) + 1))
     merged = []
     for start, end in sorted(spans):

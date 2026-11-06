@@ -6,7 +6,7 @@ import time
 
 from .errors import SpeechError
 from .tts_v3 import grpc_sdk
-from .tts_text import native_boundary, native_spans
+from .tts_text import native_boundary, native_spans, partition_plain
 
 _END=object()
 
@@ -47,7 +47,8 @@ class AudioStream:
         if type(deadline_seconds) not in (int,float) or not math.isfinite(deadline_seconds) or not 0<deadline_seconds<=86400:
             transport.close()
             raise SpeechError("CONFIG","stream deadline must be finite and in (0, 86400] seconds")
-        self.source=iter([source] if isinstance(source,str) else source)
+        self._known_text=isinstance(source,str)
+        self.source=iter([source] if self._known_text else source)
         self.transport=transport
         self.options=options
         self.deadline=time.monotonic()+deadline_seconds
@@ -61,6 +62,7 @@ class AudioStream:
         self._closed=False
         self._cancelled=False
         self._buffer=""
+        self._pending_fragment=""
         self._source_eof=False
         self._last_text=time.monotonic()
         self._remainder=""
@@ -94,9 +96,14 @@ class AudioStream:
                 self._check()
                 if not isinstance(fragment,str):
                     raise SpeechError("CONFIG","text fragments must be strings")
-                # Queue packets are not synthesis boundaries; _phrase retains lexical state.
-                for start in range(0,len(fragment),5000):
-                    self._put(self._text_queue,fragment[start:start+5000])
+                if self._known_text:
+                    # Whole input is known: prove pronunciation boundaries before queueing.
+                    packets=partition_plain(fragment,lambda value:len(value)<=5000)
+                else:
+                    # Packets are not synthesis boundaries; _phrase retains lexical state.
+                    packets=(fragment[start:start+5000] for start in range(0,len(fragment),5000))
+                for packet in packets:
+                    self._put(self._text_queue,packet)
             self._put(self._text_queue,_END)
         except Exception as error:
             self._fail(error if isinstance(error,SpeechError) else SpeechError("CONFIG","text source failed"))
@@ -107,11 +114,11 @@ class AudioStream:
         while True:
             self._check()
             for match in re.finditer(r"(?<=[.!?;:])\s+|\n",self._buffer):
-                n=native_boundary(self._buffer,min(match.end(),5000),complete=self._source_eof)
+                n=native_boundary(self._buffer,min(match.end(),5000),complete=self._source_eof or self._known_text)
                 if n:
                     text=self._buffer[:n];self._buffer=self._buffer[n:];return text
             if len(self._buffer)>=5000:
-                n=native_boundary(self._buffer,5000,complete=self._source_eof)
+                n=native_boundary(self._buffer,5000,complete=self._source_eof or self._known_text)
                 if n:
                     text=self._buffer[:n];self._buffer=self._buffer[n:];return text
                 if any(end <= len(self._buffer) and end - start > 5000
@@ -129,14 +136,21 @@ class AudioStream:
                     n=native_boundary(self._buffer,boundaries[-1].end(),complete=False)
                     if n:
                         text=self._buffer[:n];self._buffer=self._buffer[n:];return text
-            try:fragment=self._text_queue.get(timeout=.02)
-            except queue.Empty:continue
+            if self._pending_fragment:
+                fragment=self._pending_fragment
+                self._pending_fragment=""
+            else:
+                try:fragment=self._text_queue.get(timeout=.02)
+                except queue.Empty:continue
             if fragment is _END:self._source_eof=True
             else:
-                if len(self._buffer) + len(fragment) > 10000:
+                room=10000-len(self._buffer)
+                if room<=0:
                     raise SpeechError("LIMIT", "unfinished pronunciation context exceeds the "
                                       "10000-character lookahead budget; supply complete shorter units")
-                self._buffer+=fragment;self._last_text=time.monotonic()
+                self._buffer+=fragment[:room]
+                self._pending_fragment=fragment[room:]
+                self._last_text=time.monotonic()
 
     def _requests(self,first,drained,receipt):
         _,p,_=grpc_sdk()
