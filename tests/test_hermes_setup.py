@@ -287,6 +287,86 @@ class NativeSetupTests(unittest.TestCase):
             self.assertEqual(self.config.read_bytes(), before)
             self.assertFalse((self.home / "plugins").exists())
 
+    def test_noncanonical_command_shapes_are_rejected_before_migration(self):
+        import copy
+        baseline = self.backend.read()
+        commands = [
+            "python " + str(self.root / "scripts/tts.py") +
+            " --input-file {input_path} --output {output_path} --mode async",
+            str(self.root / "scripts/hermes-tts-wrapper.sh") + " {output_path} {input_path}",
+            str(self.root / "scripts/hermes-tts-wrapper.sh") + " {input_path}/other.txt {output_path}",
+        ]
+        for command in commands:
+            data = copy.deepcopy(baseline)
+            data["tts"]["providers"] = {"yandex": {"type": "command", "command": command}}
+            self.write(data)
+            before = self.config.read_bytes()
+            with self.assertRaises(SpeechError):
+                self.plan()
+            self.assertEqual(self.config.read_bytes(), before)
+            self.assertFalse((self.home / "plugins").exists())
+
+    def test_known_success_cat_and_adapter_flags_migrate_the_literal_preferences(self):
+        data = self.backend.read()
+        data["stt"]["providers"] = {"yandex": {"type": "command", "command":
+            str(self.root / "scripts/hermes-stt-wrapper.sh") +
+            " {input_path} {output_dir} {language} && cat {output_dir}/transcript.txt"}}
+        data["tts"]["providers"] = {"yandex": {"type": "command", "output_format": "ogg",
+            "command": "python3 " + str(self.root / "scripts/tts.py") +
+            " --input-file {input_path} --output {output_path} --format oggopus"
+            " --adapter-voice ermil --adapter-emotion good"}}
+        self.write(data)
+        plan = self.plan()
+        self.assertEqual(plan.after["tts"]["voice"], "ermil")
+        self.assertEqual(plan.after["tts"]["output_format"], "ogg")
+        self.assertEqual(plan.after["tts"]["yandex"]["role"], "good")
+
+    def test_parent_redirect_after_the_last_path_guard_never_writes_foreign_directory(self):
+        foreign = self.home / "foreign-profile"
+        foreign.mkdir()
+        plan = self.plan()
+        original = plan._link_state
+        calls = []
+        def late_redirect():
+            state = original()
+            calls.append(state)
+            if len(calls) == 2:
+                (self.home / "plugins").symlink_to(foreign, target_is_directory=True)
+            return state
+        before = self.config.read_bytes()
+        with patch.object(plan, "_link_state", side_effect=late_redirect):
+            with self.assertRaises(SpeechError):
+                plan.apply()
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(list(foreign.iterdir()), [])
+
+    def test_native_transaction_preserves_update_after_the_final_snapshot_read(self):
+        import copy
+        plan = self.plan()
+        incoming = copy.deepcopy(plan.before)
+        incoming["model"]["default"] = "late-operator-choice"
+        incoming["new_unrelated_field"] = "preserve"
+        publish = self.backend._write
+        def intervening_write(path, value, **kwargs):
+            publish(path, incoming)
+            return publish(path, value, **kwargs)
+        with patch.object(self.backend, "_write", side_effect=intervening_write):
+            with self.assertRaises(SpeechError) as error:
+                plan.apply()
+        self.assertEqual(error.exception.category, "STATE")
+        self.assertEqual(self.backend.read(), incoming)
+        self.assertEqual(self.secret.read_text(), "TEST_ONLY_SECRET=synthetic-owned-value\n")
+
+    def test_missing_native_transaction_api_blocks_apply_without_filesystem_changes(self):
+        plan = self.plan()
+        before = self.config.read_bytes()
+        with patch.object(self.backend, "supports_expected_state", False):
+            with self.assertRaises(SpeechError) as error:
+                plan.apply()
+        self.assertEqual(error.exception.category, "PREREQUISITE")
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertFalse((self.home / "plugins").exists())
+
 
 class NativeSetupCliTests(unittest.TestCase):
     def test_cli_routes_plan_apply_and_explicit_streaming_without_a_probe(self):

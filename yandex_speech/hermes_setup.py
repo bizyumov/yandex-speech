@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import copy
+import inspect
+import os
+import stat
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
-import string
 import sys
 import sysconfig
 
@@ -27,7 +30,10 @@ class _NativeBackend:
     def __init__(self):
         try:
             from hermes_constants import get_hermes_home
-            from hermes_cli.config import fast_safe_load, atomic_config_replace
+            from utils import fast_safe_load
+            from hermes_cli.plugins_discovery import suppress_plugin_discovery
+            with suppress_plugin_discovery():
+                from hermes_cli.config import atomic_config_replace
         except ImportError:
             raise SpeechError("PREREQUISITE", "native enrollment requires the supported Hermes runtime") from None
         self._get_home = get_hermes_home
@@ -35,6 +41,7 @@ class _NativeBackend:
         self.path = self.home / "config.yaml"
         self._read = fast_safe_load
         self._write = atomic_config_replace
+        self.supports_expected_state = "expected_state" in inspect.signature(atomic_config_replace).parameters
 
     def _assert_scope(self):
         if Path(self._get_home()).resolve() != self.home:
@@ -57,10 +64,17 @@ class _NativeBackend:
             raise SpeechError("CONFIG", "active profile configuration must be a mapping with setting names")
         return copy.deepcopy(value)
 
-    def write(self, value):
+    def write(self, value, *, expected_state=None):
         self._assert_scope()
+        if expected_state is not None and not self.supports_expected_state:
+            raise SpeechError("PREREQUISITE", "install the tested native configuration safety update before applying enrollment")
         try:
-            self._write(self.path, value)
+            from hermes_cli.plugins_discovery import suppress_plugin_discovery
+            with suppress_plugin_discovery():
+                if expected_state is None:
+                    self._write(self.path, value)
+                else:
+                    self._write(self.path, value, expected_state=expected_state)
         except (OSError, ValueError, RuntimeError):
             raise SpeechError("STATE", "native profile publication failed; inspect the active profile before retrying") from None
 
@@ -73,19 +87,65 @@ def _put_preference(section, name, value):
     section[name] = value
 
 
-def _addressed_placeholder(value, kind):
-    allowed = {"input_path", "output_dir", "language"} if kind == "stt" else {"input_path", "output_path"}
-    try:
-        fields = [(name, spec, conversion) for _, name, spec, conversion
-                  in string.Formatter().parse(value) if name is not None]
-    except ValueError:
-        return False
-    return bool(fields) and all(name in allowed and not spec and conversion is None
-                                for name, spec, conversion in fields)
+def _migration_value(values, name, value):
+    if name == "output_format":
+        value = {"oggopus": "ogg", "opus": "ogg"}.get(value, value)
+    if name == "speed":
+        try:
+            value = float(value)
+        except ValueError:
+            raise SpeechError("CONFIG", "legacy speed is invalid") from None
+    _put_preference(values, name, value)
+
+
+def _direct_defaults(kind, words, values):
+    options = {"--lang": "language", "--language": "language",
+               "--api-version": "api_version", "--transport": "transport"}
+    if kind == "tts":
+        options.update({"--voice": "voice", "--adapter-voice": "voice",
+                        "--emotion": "role", "--adapter-emotion": "role", "--role": "role",
+                        "--model": "model", "--speed": "speed", "--format": "output_format"})
+    inputs = outputs = 0
+    while words:
+        token = words.pop(0)
+        if token == "{input_path}" and kind == "stt":
+            inputs += 1
+            continue
+        if token not in options and token not in {"--input-file", "--output", "-o", "--output-dir",
+                                                  "--mode", "--format"}:
+            raise SpeechError("CONFIG", "legacy command contains unsupported arguments")
+        if not words:
+            raise SpeechError("CONFIG", "legacy command option is missing its value")
+        value = words.pop(0)
+        if token == "--input-file":
+            if kind != "tts" or value != "{input_path}":
+                raise SpeechError("CONFIG", "legacy input must be the exact addressed input")
+            inputs += 1
+        elif token in {"--output", "-o", "--output-dir"}:
+            allowed = {"{output_path}"} if kind == "tts" else {
+                "{output_dir}", "{output_dir}/transcript.txt"}
+            if value not in allowed or kind == "tts" and token == "--output-dir":
+                raise SpeechError("CONFIG", "legacy output does not match the native addressed contract")
+            outputs += 1
+        elif token == "--mode":
+            if kind != "stt" or value not in {"auto", "async"}:
+                raise SpeechError("CONFIG", "legacy recognition mode cannot be preserved")
+        elif token == "--format" and kind == "stt":
+            if value != "txt":
+                raise SpeechError("CONFIG", "native message transcription cannot preserve this export selection")
+        elif value == "{language}" and kind == "stt" and token in {"--lang", "--language"}:
+            continue
+        elif "{" in value or "}" in value:
+            raise SpeechError("CONFIG", "legacy behavioral placeholders require reconciliation")
+        else:
+            _migration_value(values, options[token], value)
+    if inputs != 1 or outputs != 1:
+        raise SpeechError("CONFIG", "canonical file commands require one exact input and output")
+    return values
 
 
 def _legacy_defaults(kind, entry, scripts):
-    """Recognize canonical commands without executing a shell or expanding values."""
+    """Recognize complete canonical command shapes without executing a shell."""
     if not isinstance(entry, dict) or entry.get("type") != "command":
         raise SpeechError("CONFIG", "same-name Yandex provider is not a recognized command entry")
     command = entry.get("command")
@@ -104,9 +164,10 @@ def _legacy_defaults(kind, entry, scripts):
         if kind != "tts" or name not in aliases or not value or any(c in value for c in "$\x60"):
             raise SpeechError("CONFIG", "legacy Yandex command has unsupported environment prefixes")
         values[aliases[name]] = value
+    runner = None
     if words and (words[0] in {"python", "python3", "sh", "bash"}
                   or Path(words[0]).resolve() == Path(sys.executable).resolve()):
-        words.pop(0)
+        runner = words.pop(0)
     if not words:
         raise SpeechError("CONFIG", "legacy Yandex command is empty")
     script = Path(words.pop(0)).expanduser().resolve()
@@ -114,45 +175,23 @@ def _legacy_defaults(kind, entry, scripts):
     direct = {root / ("tts.py" if kind == "tts" else "transcribe.py") for root in scripts}
     if script not in wrappers | direct:
         raise SpeechError("CONFIG", "legacy command is not a canonical Yandex script or wrapper")
+    if runner is not None and ((script in wrappers) != (runner in {"sh", "bash"})):
+        raise SpeechError("CONFIG", "legacy interpreter does not match its canonical script")
     if kind == "tts" and entry.get("voice_compatible") is False:
         raise SpeechError("CONFIG", "legacy voice delivery opt-out is incompatible with native enrollment")
     if kind == "stt" and entry.get("language"):
         values["language"] = entry["language"]
     if kind == "tts" and entry.get("output_format"):
-        values["output_format"] = entry["output_format"]
-    options = {"--lang": "language", "--language": "language",
-               "--api-version": "api_version", "--transport": "transport"}
-    if kind == "tts":
-        options.update({"--voice": "voice", "--emotion": "role", "--role": "role",
-                        "--model": "model", "--speed": "speed", "--format": "output_format"})
-    ignore = {"--input-file", "--output", "-o", "--output-dir"}
-    while words:
-        token = words.pop(0)
-        if token in options or token in ignore:
-            if not words:
-                raise SpeechError("CONFIG", "legacy command option is missing its value")
-            value = words.pop(0)
-            if token in ignore:
-                if not _addressed_placeholder(value, kind):
-                    raise SpeechError("CONFIG", "legacy input/output is not a recognized addressed placeholder")
-                continue
-            if "{" in value:
-                if value == "{language}" and kind == "stt":
-                    continue
-                raise SpeechError("CONFIG", "legacy behavioral placeholders require explicit reconciliation")
-            target = options[token]
-            if target == "speed":
-                try:
-                    value = float(value)
-                except ValueError:
-                    raise SpeechError("CONFIG", "legacy speed is invalid") from None
-            _put_preference(values, target, value)
-        elif token == "--mode":
-            if not words or words.pop(0) not in {"auto", "async"}:
-                raise SpeechError("CONFIG", "legacy recognition mode cannot be preserved by native enrollment")
-        elif token.startswith("-") or not _addressed_placeholder(token, kind):
-            raise SpeechError("CONFIG", "legacy command contains unsupported arguments; no settings changed")
-    return values
+        _migration_value(values, "output_format", entry["output_format"])
+    if script in wrappers:
+        expected = ["{input_path}", "{output_path}"] if kind == "tts" else [
+            "{input_path}", "{output_dir}", "{language}"]
+        if kind == "stt" and words == expected + ["&&", "cat", "{output_dir}/transcript.txt"]:
+            words = words[:3]
+        if words != expected:
+            raise SpeechError("CONFIG", "legacy wrapper arguments do not match its exact addressed contract")
+        return values
+    return _direct_defaults(kind, words, values)
 
 
 def _public_changes(before, after, prefix=""):
@@ -202,6 +241,40 @@ def _reject_changed_aliases(before, after):
             raise SpeechError("CONFIG", "changed native settings share YAML aliases; separate those aliases before enrollment")
 
 
+@contextmanager
+def _plugin_directory(home):
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.symlink not in os.supports_dir_fd:
+        raise SpeechError("PREREQUISITE", "safe native enrollment requires directory-relative filesystem operations")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    home_fd = os.open(home, flags)
+    plugin_fd = None
+    try:
+        try:
+            os.mkdir("plugins", mode=0o700, dir_fd=home_fd)
+        except FileExistsError:
+            pass
+        plugin_fd = os.open("plugins", flags, dir_fd=home_fd)
+
+        def verify():
+            current = os.stat("plugins", dir_fd=home_fd, follow_symlinks=False)
+            opened = os.fstat(plugin_fd)
+            if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                raise SpeechError("STATE", "profile plugins directory changed during enrollment")
+            live_home = Path(home).lstat()
+            opened_home = os.fstat(home_fd)
+            if (live_home.st_dev, live_home.st_ino) != (opened_home.st_dev, opened_home.st_ino):
+                raise SpeechError("STATE", "active profile directory changed during enrollment")
+
+        verify()
+        yield plugin_fd, verify
+    except OSError:
+        raise SpeechError("CONFIG", "cannot safely open the active profile plugins directory") from None
+    finally:
+        if plugin_fd is not None:
+            os.close(plugin_fd)
+        os.close(home_fd)
+
+
 @dataclass
 class NativePlan:
     backend: object
@@ -236,35 +309,50 @@ class NativePlan:
                 "plugin": {"path": str(self.plugin_link), "source": str(self.plugin_target),
                            "action": "create-link" if state == "absent" else "keep-link"},
                 "availability": self.checks,
+                "safe_apply_available": bool(getattr(self.backend, "supports_expected_state", False)),
                 "changed": self.before != self.after or state == "absent"}
 
     def apply(self):
         report = self.summary()
+        if not getattr(self.backend, "supports_expected_state", False):
+            raise SpeechError("PREREQUISITE", "install the tested native configuration safety update before applying enrollment")
         if self.backend.read() != self.before:
             raise SpeechError("STATE", "profile configuration changed after native enrollment planning")
+        self._link_state()
         created = None
-        if self._link_state() == "absent":
-            self.plugin_link.parent.mkdir(parents=True, exist_ok=True)
-            self.plugin_link.symlink_to(self.plugin_target, target_is_directory=True)
-            info = self.plugin_link.lstat()
-            created = info.st_dev, info.st_ino
-        try:
-            if self.backend.read() != self.before:
-                raise SpeechError("STATE", "profile configuration changed before native enrollment publication")
-            if self.after != self.before:
-                self.backend.write(copy.deepcopy(self.after))
-                if self.backend.read() != self.after:
-                    raise SpeechError("STATE", "native profile read-back does not match the enrollment plan")
-        except Exception:
+        with _plugin_directory(self.backend.home) as (directory, verify):
             try:
-                unchanged = self.backend.read() == self.before
+                try:
+                    os.symlink(str(self.plugin_target), "yandex-speech", dir_fd=directory)
+                    info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
+                    created = info.st_dev, info.st_ino
+                except FileExistsError:
+                    info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
+                    target = os.stat("yandex-speech", dir_fd=directory)
+                    expected = self.plugin_target.stat()
+                    if not stat.S_ISLNK(info.st_mode) or (target.st_dev, target.st_ino) != (expected.st_dev, expected.st_ino):
+                        raise SpeechError("CONFIG", "existing plugin entry changed before enrollment")
+                verify()
+                if self.backend.read() != self.before:
+                    raise SpeechError("STATE", "profile configuration changed before native enrollment publication")
+                if self.after != self.before:
+                    self.backend.write(copy.deepcopy(self.after), expected_state=self.before)
+                    if self.backend.read() != self.after:
+                        raise SpeechError("STATE", "native profile read-back does not match the enrollment plan")
+                verify()
             except Exception:
-                unchanged = False
-            if created is not None and unchanged and self.plugin_link.is_symlink():
-                info = self.plugin_link.lstat()
-                if (info.st_dev, info.st_ino) == created and self.plugin_link.resolve() == self.plugin_target:
-                    self.plugin_link.unlink()
-            raise
+                try:
+                    unchanged = self.backend.read() == self.before
+                except Exception:
+                    unchanged = False
+                if created is not None and unchanged:
+                    try:
+                        info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
+                    except FileNotFoundError:
+                        info = None
+                    if info is not None and (info.st_dev, info.st_ino) == created:
+                        os.unlink("yandex-speech", dir_fd=directory)
+                raise
         report["status"] = "applied"
         return report
 

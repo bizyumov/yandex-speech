@@ -35,8 +35,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg
           sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hermes
-          git clone --branch v0.22.5 --depth 1 https://github.com/NousResearch/hermes-agent.git /opt/hermes/src
-          test "$(git -C /opt/hermes/src rev-parse HEAD)" = bf0203a794a07aac3ff764972ab9087baa4e4f4e
+          git init /opt/hermes/src
+          git -C /opt/hermes/src remote add origin https://github.com/bizyumov/hermes-agent.git
+          git -C /opt/hermes/src fetch --depth 1 origin d70347878ae939e09d140839e7def0f127df5344
+          git -C /opt/hermes/src checkout -b native-speech-accepted FETCH_HEAD
+          test "$(git -C /opt/hermes/src rev-parse HEAD)" = d70347878ae939e09d140839e7def0f127df5344
           uv sync --project /opt/hermes/src --frozen --no-dev --python "$(command -v python)"
           printf 'VIRTUAL_ENV=%s\n' "$UV_PROJECT_ENVIRONMENT" >> "$GITHUB_ENV"
           printf '%s/bin\n' "$UV_PROJECT_ENVIRONMENT" >> "$GITHUB_PATH"
