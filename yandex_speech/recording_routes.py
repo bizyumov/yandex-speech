@@ -97,7 +97,7 @@ def transcribe_recording(client, source, options):
         settings.value("object_storage").get("bucket"))
     routing = {"requested_api_version": version, "requested_transport": policy, "attempts": [], "reasons": []}
 
-    def legacy():
+    def legacy(*, allow_windows_on_limit=True):
         if supplied_uri or not legacy_allowed:
             raise SpeechError("PREREQUISITE", "available text-only v1 cannot fulfill the selected version or required features")
         duration = _duration(source, options.get("audio_input"), options.get("audio_track"),
@@ -108,7 +108,15 @@ def transcribe_recording(client, source, options):
         selected.update(api_version="1", transport="rest",
                         deadline_seconds=client._remaining(deadline, cap=None))
         routing["attempts"].append({"api_version": "1", "transport": "rest", "mode": method})
-        value = client._legacy_call(method, source, **selected)
+        try:
+            value = client._legacy_call(method, source, **selected)
+        except SpeechError as error:
+            if not allow_windows_on_limit or method != "transcribe_direct" or error.category != "LIMIT":
+                raise
+            routing["reasons"].append({"kind": "direct-local-limit", "category": "LIMIT"})
+            routing["attempts"].append({"api_version": "1", "transport": "rest", "mode": "transcribe_chunked_direct"})
+            selected["deadline_seconds"] = client._remaining(deadline, cap=None)
+            value = client._legacy_call("transcribe_chunked_direct", source, **selected)
         value["routing"] = copy.deepcopy(routing)
         return value
 
@@ -121,7 +129,7 @@ def transcribe_recording(client, source, options):
                           client._remaining(deadline, cap=None)) <= 30_000):
         routing["reasons"].append({"kind": "short-raw-direct", "message": "eligible unformatted short recording"})
         try:
-            return legacy()
+            return legacy(allow_windows_on_limit=False)
         except SpeechError as error:
             if error.category != "LIMIT":
                 raise

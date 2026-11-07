@@ -121,6 +121,8 @@ def transcribe_main(argv=None):
             raise SpeechError("CONFIG","the output must not replace the addressed source")
         
         fmt=args.format or settings.value("default_format")
+        if fmt in {"srt", "vtt"} and args.timestamps is False:
+            raise SpeechError("CONFIG", "subtitle export requires genuine timing; --no-timestamps conflicts")
         if args.stream and (settings.value("enable_diarization") and args.diarize is not False
                             or fmt in {"srt","vtt"}):
             raise SpeechError("CONFIG","arriving recognition cannot fulfill selected speaker/subtitle output")

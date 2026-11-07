@@ -226,3 +226,46 @@ class RecordingRouteTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((self.root / "transcript.txt").is_file())
         self.assertFalse((self.root / "transcript.job.json").exists())
+
+    def test_short_high_rate_v1_body_limit_is_local_and_can_select_async(self):
+        with wave.open(str(self.path), "wb") as stream:
+            stream.setnchannels(1); stream.setsampwidth(2); stream.setframerate(48000)
+            stream.writeframes(bytes(48000 * 2 * 12))
+        session = Mock()
+        session.post.side_effect = AssertionError("oversized direct request reached provider")
+        self.client.session = session
+        with patch.object(self.client, "start_transcription", return_value=self.accepted()) as start:
+            with patch.object(self.client, "poll_until_complete", return_value=result("3")):
+                actual = self.client.transcribe_auto(self.path, literature_text=False)
+        self.assertEqual(actual["api_version"], "3")
+        self.assertEqual(start.call_count, 1)
+        session.post.assert_not_called()
+
+    def test_fixed_v1_high_rate_short_input_uses_bounded_pcm_windows(self):
+        from types import SimpleNamespace
+        with wave.open(str(self.path), "wb") as stream:
+            stream.setnchannels(1); stream.setsampwidth(2); stream.setframerate(48000)
+            stream.writeframes(bytes(48000 * 2 * 12))
+        calls = []
+        def post(url, **options):
+            calls.append(options)
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: {"result": "synthetic"})
+        self.client.session = SimpleNamespace(post=post)
+        actual = self.client.transcribe_auto(self.path, api_version="1", literature_text=False)
+        self.assertEqual(actual["api_version"], "1")
+        self.assertTrue(actual["input_complete"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]["data"]), 12 * 32000)
+
+    def test_subtitle_conflict_fails_before_cli_client_or_provider(self):
+        import contextlib, io
+        from yandex_speech.cli import transcribe_main
+        for fmt in ("srt", "vtt"):
+            with self.subTest(fmt=fmt):
+                with patch("yandex_speech.cli.SpeechTranscriber") as factory:
+                    factory.return_value.transcribe_auto.return_value = result("1")
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = transcribe_main([str(self.path), "--no-literature-text", "--no-timestamps",
+                            "--format", fmt, "--output", str(self.root / ("conflict." + fmt))])
+                self.assertEqual(code, 2)
+                factory.assert_not_called()
