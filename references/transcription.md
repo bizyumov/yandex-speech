@@ -2,11 +2,11 @@
 
 ## API options
 
-| Route | Status in Phase 1 | Requirements and trade-offs |
+| Route | Delivery status | Requirements and trade-offs |
 |---|---|---|
 | gRPC v3 RecognizeFile → operation polling → GetRecognition | Implemented; default recording route | Optional yandexcloud/grpcio/grpcio-tools, requests base, SpeechKit execution permission. Timing and native two-speaker mixed recording labels. Binary inline content or caller-provided supported storage URI. |
 | gRPC v3 RecognizeStreaming | Implemented for one bounded utterance | Recognition while audio arrives; ordered prepared PCM, previews, external EOU, complete response drain. No mixed-recording diarization/subtitle output. |
-| REST v1 direct / legacy 25-second split | Preserved explicit entries | No gRPC/S3. Text-only raw output; no genuine timing or speaker labels, no literary-style guarantee. Corrected 30-second/five-second-overlap assembly is Phase 2. |
+| REST v1 direct / overlapped split | Implemented explicit text-only entries | No gRPC/S3. Sample-exact windows up to 30 seconds, five-second overlap and 25-second stride. Raw output has no genuine word timing/speaker labels or literary-style guarantee. |
 | REST v2 async-s3 | Preserved explicit compatibility | requests+boto3 and authorized object access. Existing v2 response handling, not v3 streaming/results. New durable recovery/storage helpers are Phase 2. |
 | REST v3 + S3 or eligible inline; complete fallback chain | Phase 2 | Whole-file v3 metadata without optional gRPC dependencies; upload/polling/access setup. |
 
@@ -22,6 +22,26 @@ Exact project admission limits are applied to prepared audio, not its original c
 | Arriving recognition | Native 16 kHz mono s16le PCM; ≤240 s / 7,680,000 bytes per utterance. Source queue ≤1,048,576 bytes; prepared queue ≤64,000 bytes; two local speech operations and one inline submission at a time. Finalization ≤5 s; accepted cancellation cleanup ≤2 s. |
 
 [Provider limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits) · [Formats](https://aistudio.yandex.ru/en/docs/speechkit/formats) · [v3 recorded API](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/grpc/AsyncRecognizer/recognizeFile).
+
+## Recorded split recognition
+
+For an explicitly selected unformatted alternative, use the existing split entry:
+
+```bash
+python scripts/transcribe.py recording.wav --mode direct-chunked --api-version 1 --transport rest --no-literature-text --format json --output transcript.json
+```
+
+The default literary request remains true. This command explicitly selects v1 raw text; it does not fulfill timing, speaker labels, subtitle cues or literary formatting. Prefer the ordinary v3 recording route when those features are required. The synchronous service accepts one channel, up to 30 seconds and 1 MB; the project keeps each complete 16 kHz mono s16le window at 960,000 bytes. [Synchronous API](https://aistudio.yandex.ru/en/docs/speechkit/stt/api/request-api).
+
+The decoder prepares one owned PCM recording, then extracts windows at 0, 25, 50, … seconds, each ending at the earlier of start+30 seconds or recording EOF. It stops when the previous window already covers EOF: 55 seconds needs two requests, while 56 seconds needs three. Original media remains unchanged. JSON retains window/sample/source offsets, every raw response and every text hypothesis. These window spans are not provider word times; normalized speech timing stays absent.
+
+Assembly compares only adjacent suffix/prefix hypotheses. A unique multiword match appears once in the selected text, while genuine repeated phrases elsewhere remain. An anchored cut word can use the complete raw word from the next window and retain its partial alternative. Multiple matching lengths, single-word matches and disagreement retain both hypotheses with a structured uncertainty. Even a selected text-only alignment records the lack of word-time proof. The CLI reports boundary caveats on stderr, preserving its output-path-only stdout. Select JSON upfront when inspecting these alternatives; TXT contains the conservative selected text.
+
+The opt-in `tests.provider.test_overlap` acceptance uses a synthetic 56-second recording with a word clip crossing 30 seconds, two genuine repeated requests and the final control tail. Both the public Python split operation and the CLI are exercised; its summaries contain counts/hashes rather than transcript or credential values. Run with the existing synthetic-provider opt-in and an optional unique evidence destination:
+
+```bash
+YANDEX_SPEECH_LIVE_TESTS=1 python -m unittest tests.provider.test_overlap -v
+```
 
 ## Configuration
 

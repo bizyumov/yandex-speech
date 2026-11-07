@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Recognize split recordings through exact 30-second PCM windows with five-second overlap; retain adjacent-boundary alternatives, cut-word evidence and legitimate repeated speech without invented timing.
+
 - Drain workers registered during concurrent stream cancellation/finalization before closing worker admission; retain the existing shutdown deadline and genuine timeout errors.
 
 - Add active-profile native speech enrollment preview/apply, protected canonical-command migration, explicit streaming selection and installed-wheel plugin discovery.

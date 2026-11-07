@@ -322,7 +322,7 @@ class SpeechTranscriber:
                        "api_version":version,"transport":"rest",
                        "metadata_availability":{"timing":"none","speaker":"none",
                                                 "text_representation":"raw-unfulfilled" if settings.value("literature_text") else "raw"},
-                       "uncertainties":[{"kind":"literary-unfulfilled","message":"explicit legacy route returns raw text; requested literary style is unavailable in this entry"}] if settings.value("literature_text") else []})
+                       "uncertainties":list(result.get("uncertainties", [])) + ([{"kind":"literary-unfulfilled","message":"explicit legacy route returns raw text; requested literary style is unavailable in this entry"}] if settings.value("literature_text") else [])})
         return result
 
     def transcribe_direct(self,path,**options):
