@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Drain workers registered during concurrent stream cancellation/finalization before closing worker admission; retain the existing shutdown deadline and genuine timeout errors.
+
 - Add active-profile native speech enrollment preview/apply, protected canonical-command migration, explicit streaming selection and installed-wheel plugin discovery.
 
 - Register paired native Hermes STT/TTS providers with profile-scoped defaults/secrets, per-call synthesis clients, protected actual output paths and eligible 24 kHz PCM streaming.
