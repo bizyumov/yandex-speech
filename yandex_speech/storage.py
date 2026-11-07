@@ -98,12 +98,20 @@ def _error(error, *, mutation=False):
     return SpeechError("PROVIDER", "storage metadata is unavailable; do not infer missing grants or retry upload",
                        code=code or None)
 
+@contextlib.contextmanager
+def _receipt_errors(receipt):
+    try:
+        yield
+    except SpeechError as error:
+        error.receipt_path = str(receipt.manifest_path)
+        raise
+
 
 class UploadReceipt:
     """URI/probed metadata plus a private uploading-operation ownership record."""
 
     def __init__(self, manifest_path, data):
-        self.manifest_path = Path(manifest_path)
+        self.manifest_path = Path(manifest_path).expanduser().absolute()
         self.data = data
 
     @classmethod
@@ -258,9 +266,10 @@ class ObjectStorageUploader:
                     "retention": "retain"}
             receipt = UploadReceipt(directory / "upload.json", data)
             receipt.save()
-            with receipt.lock(), self._connection(self.endpoint, deadline) as client:
+            with _receipt_errors(receipt), receipt.lock(), self._connection(self.endpoint, deadline) as client:
                 receipt.data["status"] = "uploading"
                 receipt.save()
+                _remaining(deadline)
                 try:
                     with prepared.path.open("rb") as source:
                         response = client.put_object(Bucket=self.bucket, Key=key, Body=source,
@@ -276,7 +285,8 @@ class ObjectStorageUploader:
                         or not 200 <= response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) < 300):
                     receipt.data.update(status="upload_uncertain", error_code="UPLOAD_UNCERTAIN")
                     receipt.save()
-                    raise SpeechError("OUTPUT_PARTIAL", "upload returned no verified success receipt", code="UPLOAD_UNCERTAIN")
+                    raise SpeechError("OUTPUT_PARTIAL", "upload returned no verified success receipt", code="UPLOAD_UNCERTAIN",
+                                      receipt_path=str(receipt.manifest_path))
                 receipt.data.update(status="uploaded", version_id=response.get("VersionId"), etag=response.get("ETag"))
                 # Identity fields are completed by this accepted PUT, so persist their
                 # first transition separately from later identity-preserving updates.
@@ -302,6 +312,7 @@ class ObjectStorageUploader:
             if receipt.status not in {"uploading", "upload_uncertain"}:
                 raise SpeechError("STATE", "this receipt is not an uncertain upload; no upload is repeated")
             with self._connection(receipt.data["endpoint"], deadline) as client:
+                _remaining(deadline)
                 try:
                     response = client.head_object(Bucket=receipt.bucket, Key=receipt.key)
                 except Exception as exc:
@@ -332,6 +343,7 @@ class ObjectStorageUploader:
             if not version or version == "null":
                 raise SpeechError("PREREQUISITE", "safe cleanup requires an immutable uploaded object version; unversioned sources stay retained")
             with self._connection(receipt.data["endpoint"], deadline) as client:
+                _remaining(deadline)
                 try:
                     response = client.head_object(Bucket=receipt.bucket, Key=receipt.key, VersionId=version)
                     self._verify_head(receipt, response)
@@ -349,6 +361,7 @@ class ObjectStorageUploader:
                     raise error from None
                 receipt.data["status"] = "deleting"
                 receipt.save()
+                _remaining(deadline)
                 try:
                     deleted = client.delete_object(Bucket=receipt.bucket, Key=receipt.key, VersionId=version)
                     if not 200 <= deleted.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) < 300:

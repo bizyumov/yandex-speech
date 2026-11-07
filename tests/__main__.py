@@ -129,6 +129,8 @@ def main(argv=None):
         coverage={}
         omitted={"test_grpc_file","test_job_recovery","test_lifecycle","test_stream_api",
                      "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream"} if args.profile != "grpc" else set()
+        if args.profile != "storage":
+            omitted.add("test_storage_sdk")
         for ac,record in manifest["acceptance"].items():
             coverage[ac]={}
             for level,selectors in record.items():
@@ -136,10 +138,7 @@ def main(argv=None):
                 pending=["not-run:"+s for s in selectors if s not in available]
                 coverage[ac][level]=(list(selected_tests(available)) if available else [])+pending
         modules=[f"tests.{p.stem}" for p in sorted((ROOT/"tests").glob("test_*.py"))]
-        if args.profile != "grpc":
-            omitted={"test_grpc_file","test_job_recovery","test_lifecycle","test_stream_api",
-                     "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream"}
-            modules=[name for name in modules if name.rsplit(".",1)[-1] not in omitted]
+        modules=[name for name in modules if name.rsplit(".",1)[-1] not in omitted]
         cases=selected_tests(modules)
         for record in manifest["acceptance"].values():
             for level,enabled in [("provider",args.provider),("host",args.host)]:

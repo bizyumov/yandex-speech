@@ -72,7 +72,7 @@ class LiveOwnedStorageTests(unittest.TestCase):
         with self.assertRaises(SpeechError) as uncertain:
             uploader.upload(source, deadline_seconds=120)
         self.assertEqual(uncertain.exception.code, "UPLOAD_UNCERTAIN")
-        receipt_path = next((root / "uploads").glob("*/upload.json"))
+        receipt_path = Path(uncertain.exception.as_dict()["receipt_path"])
         self.assertEqual(UploadReceipt.load(receipt_path).status, "upload_uncertain")
         receipt = uploader.recover_upload(receipt_path)
         self.assertEqual(receipt.status, "uploaded")

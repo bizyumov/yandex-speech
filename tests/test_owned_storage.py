@@ -128,7 +128,8 @@ class OwnedStorageTests(unittest.TestCase):
         with self.assertRaises(SpeechError) as raised:
             uploader.upload(self.source)
         self.assertEqual(raised.exception.code, "UPLOAD_UNCERTAIN")
-        receipt_path = next((self.root / "uploads").glob("*/upload.json"))
+        receipt_path = Path(raised.exception.receipt_path)
+        self.assertEqual(raised.exception.as_dict()["receipt_path"], str(receipt_path))
         pending = UploadReceipt.load(receipt_path)
         self.assertEqual(pending.status, "upload_uncertain")
         recovered = uploader.recover_upload(receipt_path)
@@ -313,6 +314,71 @@ class OwnedStorageTests(unittest.TestCase):
                 self.assertEqual(len(self.backend.deletes), previous_deletes + 1)
                 self.assertEqual(UploadReceipt.load(receipt.manifest_path).status, "deleted")
 
+    def test_relative_upload_state_recovers_then_uses_public_recognition_and_cleanup(self):
+        from types import SimpleNamespace
+        from yandex_speech import ObjectStorageUploader, SpeechTranscriber
+        previous = Path.cwd()
+        os.chdir(self.root)
+        try:
+            uploader = ObjectStorageUploader(bucket="private-speech", job_dir="relative-uploads",
+                _context=RuntimeContext(user_home=self.root), _client=self.backend)
+            self.backend.lose_reply = True
+            with self.assertRaises(SpeechError) as uncertain:
+                uploader.upload(self.source)
+            self.assertEqual(uncertain.exception.code, "UPLOAD_UNCERTAIN")
+            receipt = uploader.recover_upload(uncertain.exception.receipt_path)
+            self.assertTrue(receipt.manifest_path.is_absolute())
+            rpc = SimpleNamespace(recognize_file=lambda *args: {"id": "synthetic-operation"}, close=lambda: None)
+            client = SpeechTranscriber(api_key="test-only-speech-key", job_dir=self.root / "jobs",
+                _context=RuntimeContext(user_home=self.root), _transport=rpc)
+            with patch("yandex_speech.transcription.build_file_request", return_value=object()):
+                job = client.start_transcription(receipt)
+            job.store_result({"schema_version": 1, "status": "completed", "input_complete": True,
+                              "text": "synthetic result", "segments": [], "raw": []})
+            uploader.cleanup(receipt, job)
+            self.assertEqual(len(self.backend.puts), 1)
+            self.assertEqual(len(self.backend.deletes), 1)
+        finally:
+            os.chdir(previous)
+
+    def test_cleanup_deadline_expiring_during_head_prevents_delete(self):
+        uploader = self.uploader()
+        receipt = uploader.upload(self.source)
+        job = self.completed_job(receipt)
+        original = self.backend.head_object
+        clock = [0.0]
+
+        def late_head(**request):
+            response = original(**request)
+            clock[0] = 0.03
+            return response
+
+        self.backend.head_object = late_head
+        with patch("yandex_speech.storage.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(SpeechError) as raised:
+                uploader.cleanup(receipt, job, deadline_seconds=0.01)
+        self.assertEqual(raised.exception.category, "TIMEOUT")
+        self.assertEqual(self.backend.deletes, [])
+        self.assertEqual(len(self.backend.versions), 1)
+
+    def test_expired_durable_upload_never_puts_and_returns_its_receipt(self):
+        from yandex_speech import UploadReceipt
+        original = UploadReceipt.save
+        clock = [0.0]
+
+        def delayed_save(receipt):
+            original(receipt)
+            if receipt.status == "uploading":
+                clock[0] = 2.0
+
+        with patch("yandex_speech.storage.time.monotonic", side_effect=lambda: clock[0]):
+            with patch.object(UploadReceipt, "save", delayed_save):
+                with self.assertRaises(SpeechError) as raised:
+                    self.uploader().upload(self.source, deadline_seconds=1.0)
+        self.assertEqual(raised.exception.category, "TIMEOUT")
+        self.assertTrue(Path(raised.exception.as_dict()["receipt_path"]).is_file())
+        self.assertEqual(self.backend.puts, [])
+
     def test_existing_caller_state_parent_mode_is_preserved(self):
         from yandex_speech import ObjectStorageUploader
         parent = self.root / "caller-state"
@@ -324,37 +390,16 @@ class OwnedStorageTests(unittest.TestCase):
         self.assertEqual(parent.stat().st_mode & 0o7777, before)
         self.assertEqual(receipt.manifest_path.parent.stat().st_mode & 0o777, 0o700)
 
-    def test_real_optional_sdk_does_not_retry_an_uncertain_put(self):
-        import importlib.util
-        if importlib.util.find_spec("boto3") is None:
-            self.skipTest("optional storage SDK is absent")
-        import boto3
-        from botocore.exceptions import ReadTimeoutError
+    def test_missing_optional_sdk_is_actionable_without_mutation(self):
         from yandex_speech import ObjectStorageUploader
-
-        class Wire:
-            calls = 0
-
-            def send(self, request):
-                self.calls += 1
-                raise ReadTimeoutError(endpoint_url="https://storage.yandexcloud.net", error="synthetic loss")
-
-            def close(self):
-                pass
-
-        wire = Wire()
-        original = boto3.client
-
-        def actual_client(*args, **kwargs):
-            client = original(*args, **kwargs)
-            client._endpoint.http_session = wire
-            return client
-
         uploader = ObjectStorageUploader(bucket="private-speech",
             aws_access_key_id="synthetic-sdk-id", aws_secret_access_key="synthetic-sdk-secret",
-            job_dir=self.root / "sdk-state", _context=RuntimeContext(user_home=self.root), _environment={})
-        with patch("boto3.client", side_effect=actual_client):
+            job_dir=self.root / "missing-sdk-state", _context=RuntimeContext(user_home=self.root),
+            _environment={})
+        with patch.dict("sys.modules", {"boto3": None}):
             with self.assertRaises(SpeechError) as raised:
                 uploader.upload(self.source)
-        self.assertEqual(raised.exception.code, "UPLOAD_UNCERTAIN")
-        self.assertEqual(wire.calls, 1)
+        self.assertEqual(raised.exception.category, "PREREQUISITE")
+        self.assertIn("boto3", str(raised.exception))
+        self.assertTrue(Path(raised.exception.receipt_path).is_file())
+        self.assertEqual(self.backend.puts, [])
