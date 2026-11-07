@@ -18,7 +18,7 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 - Drain workers registered during concurrent stream cancellation/finalization before closing worker admission; retain the existing shutdown deadline and genuine timeout errors.
 
-- Add active-profile native speech enrollment preview/apply, protected canonical-command migration, explicit streaming selection and installed-wheel plugin discovery.
+- Configure already admitted native plugins through stock Hermes key APIs; keep no-op setup write-free, preview legacy migration commands, retain partial updates on failure and test official 0.22.5/0.23.0 rather than a platform fork.
 
 - Register paired native Hermes STT/TTS providers with profile-scoped defaults/secrets, per-call synthesis clients, protected actual output paths and eligible 24 kHz PCM streaming.
 

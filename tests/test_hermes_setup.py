@@ -44,6 +44,16 @@ class NativeSetupTests(unittest.TestCase):
     def write(self, value):
         self.backend.write(value)
 
+    def admit(self):
+        """Fixture an existing native installation; setup does not own dependency admission."""
+        data = self.backend.read()
+        data.setdefault("plugins", {})["enabled"] = ["yandex-speech"]
+        self.write(data)
+        directory = self.home / "plugins"
+        directory.mkdir(exist_ok=True)
+        if not (directory / "yandex-speech").exists():
+            (directory / "yandex-speech").symlink_to(self.plugin, target_is_directory=True)
+
     def test_plan_is_read_only_and_does_not_dump_unrelated_config(self):
         value = self.backend.read()
         value["private_operational_field"] = "synthetic-private-payload"
@@ -56,6 +66,7 @@ class NativeSetupTests(unittest.TestCase):
         self.assertTrue(report["changed"])
 
     def test_apply_twice_preserves_unrelated_values_comments_and_credentials(self):
+        self.admit()
         secret = self.secret.read_bytes()
         first = self.plan().apply()
         data = self.backend.read()
@@ -69,7 +80,8 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual((self.home / "plugins/yandex-speech").resolve(), self.plugin.resolve())
 
-    def test_recognized_wrapper_preferences_migrate_without_executing_command(self):
+    def test_legacy_migration_is_previewed_and_refused_without_commands(self):
+        self.admit()
         data = self.backend.read()
         data["stt"]["providers"] = {"yandex": {
             "type": "command", "command": str(self.root / "scripts/hermes-stt-wrapper.sh") +
@@ -79,16 +91,18 @@ class NativeSetupTests(unittest.TestCase):
             str(self.root / "scripts/hermes-tts-wrapper.sh") + " {input_path} {output_path}",
             "output_format": "ogg", "voice_compatible": True}}
         self.write(data)
+        before = self.config.read_bytes()
         with patch("subprocess.run", side_effect=AssertionError("setup must not execute commands")):
             plan = self.plan()
             self.assertNotIn("HERMES_TTS_VOICE", json.dumps(plan.summary()))
-            plan.apply()
-        after = self.backend.read()
-        self.assertNotIn("yandex", after["stt"]["providers"])
-        self.assertNotIn("yandex", after["tts"]["providers"])
-        self.assertEqual(after["tts"]["voice"], "ermil")
-        self.assertEqual(after["tts"]["yandex"]["language"], "ru-RU")
-        self.assertEqual(after["stt"]["yandex"]["language"], "ru-RU")
+            self.assertFalse(plan.summary()["safe_apply_available"])
+            with self.assertRaises(SpeechError) as raised:
+                plan.apply()
+        self.assertEqual(raised.exception.category, "PREREQUISITE")
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(plan.after["tts"]["voice"], "ermil")
+        self.assertEqual(plan.after["tts"]["yandex"]["language"], "ru-RU")
+        self.assertEqual(plan.after["stt"]["yandex"]["language"], "ru-RU")
 
     def test_unknown_command_or_conflicting_preferences_fail_without_mutation(self):
         for command, preference in [
@@ -152,14 +166,15 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual(self.backend.read(), changed)
         self.assertFalse((self.home / "plugins").exists())
 
-    def test_failed_native_write_rolls_back_only_the_new_unchanged_link(self):
+    def test_failed_native_write_keeps_admitted_plugin(self):
+        self.admit()
         plan = self.plan()
         before = self.config.read_bytes()
         with patch.object(self.backend, "write", side_effect=SpeechError("STATE", "synthetic write failure")):
             with self.assertRaises(SpeechError):
                 plan.apply()
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertFalse(plan.plugin_link.exists())
+        self.assertEqual(plan.plugin_link.resolve(), self.plugin.resolve())
         self.assertEqual(self.secret.read_text(), "TEST_ONLY_SECRET=synthetic-owned-value\n")
 
     def test_malformed_config_and_config_symlink_fail_closed(self):
@@ -186,6 +201,7 @@ class NativeSetupTests(unittest.TestCase):
         self.assertFalse((self.home / "plugins").exists())
 
     def test_silent_native_writer_failure_is_detected_by_readback(self):
+        self.admit()
         plan = self.plan()
         before = self.config.read_bytes()
         with patch.object(self.backend, "write"):
@@ -193,7 +209,7 @@ class NativeSetupTests(unittest.TestCase):
                 plan.apply()
         self.assertEqual(error.exception.category, "STATE")
         self.assertEqual(self.config.read_bytes(), before)
-        self.assertFalse(plan.plugin_link.exists())
+        self.assertEqual(plan.plugin_link.resolve(), self.plugin.resolve())
 
     def test_plugin_parent_redirection_is_refused_without_foreign_writes(self):
         foreign = self.home / "foreign-profile"
@@ -231,6 +247,7 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual((options["default_voice"], options["_role"]), ("marina", "friendly"))
 
     def test_documented_cli_plan_apply_check_and_repeat_in_an_isolated_profile(self):
+        self.admit()
         import os
         import subprocess
         import sys
@@ -365,6 +382,7 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual(plan.after["tts"]["yandex"]["role"], "good")
 
     def test_parent_redirect_after_the_last_path_guard_never_writes_foreign_directory(self):
+        self.admit()
         foreign = self.home / "foreign-profile"
         foreign.mkdir()
         plan = self.plan()
@@ -374,6 +392,7 @@ class NativeSetupTests(unittest.TestCase):
             state = original()
             calls.append(state)
             if len(calls) == 2:
+                (self.home / "plugins").rename(self.home / "admitted-before-redirect")
                 (self.home / "plugins").symlink_to(foreign, target_is_directory=True)
             return state
         before = self.config.read_bytes()
@@ -383,32 +402,191 @@ class NativeSetupTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(list(foreign.iterdir()), [])
 
-    def test_native_transaction_preserves_update_after_the_final_snapshot_read(self):
-        import copy
+    def test_native_key_conflict_preserves_unrelated_changes(self):
+        self.admit()
         plan = self.plan()
-        incoming = copy.deepcopy(plan.before)
-        incoming["model"]["default"] = "late-operator-choice"
-        incoming["new_unrelated_field"] = "preserve"
         publish = self.backend._write
-        def intervening_write(path, value, **kwargs):
-            publish(path, incoming)
-            return publish(path, value, **kwargs)
+        def intervening_write(path, updates):
+            publish(path, {"model.default": "late-operator-choice", "new_unrelated_field": "preserve"})
+            return publish(path, updates)
         with patch.object(self.backend, "_write", side_effect=intervening_write):
             with self.assertRaises(SpeechError) as error:
                 plan.apply()
         self.assertEqual(error.exception.category, "STATE")
-        self.assertEqual(self.backend.read(), incoming)
+        current = self.backend.read()
+        self.assertEqual(current["model"]["default"], "late-operator-choice")
+        self.assertEqual(current["new_unrelated_field"], "preserve")
+        self.assertEqual(plan.plugin_link.resolve(), self.plugin.resolve())
         self.assertEqual(self.secret.read_text(), "TEST_ONLY_SECRET=synthetic-owned-value\n")
 
-    def test_missing_native_transaction_api_blocks_apply_without_filesystem_changes(self):
+    def test_missing_native_key_api_blocks_changes(self):
+        self.admit()
         plan = self.plan()
         before = self.config.read_bytes()
-        with patch.object(self.backend, "supports_expected_state", False):
+        with patch.object(self.backend, "supports_key_updates", False):
             with self.assertRaises(SpeechError) as error:
                 plan.apply()
         self.assertEqual(error.exception.category, "PREREQUISITE")
         self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(plan.plugin_link.resolve(), self.plugin.resolve())
+
+    def test_stock_noop_needs_no_writer_and_changes_no_profile_bytes(self):
+        self.admit()
+        desired = self.plan().after
+        self.write(desired)
+        before = self.config.read_bytes(), self.secret.read_bytes()
+        with patch.object(self.backend, "supports_key_updates", False), patch.object(
+                self.backend, "_write", side_effect=AssertionError("no-op must not write")):
+            report = self.plan().apply()
+        self.assertEqual(report["status"], "applied")
+        self.assertFalse(report["changed"])
+        self.assertTrue(report["safe_apply_available"])
+        self.assertEqual((self.config.read_bytes(), self.secret.read_bytes()), before)
+
+    def test_stock_noop_constructs_without_a_native_writer(self):
+        self.admit()
+        self.write(self.plan().after)
+        from hermes_cli import config_backend
+        before = self.config.read_bytes(), self.secret.read_bytes()
+        selected = config_backend.get_config_backend()
+        with patch("hermes_constants.get_hermes_home", return_value=self.home), patch.object(
+                selected, "write_changes", None):
+            readonly = _NativeBackend()
+            self.assertFalse(readonly.supports_key_updates)
+            report = plan_native(_backend=readonly, _providers=(LocalProvider, LocalProvider),
+                                 _plugin=self.plugin).apply()
+        self.assertFalse(report["changed"])
+        self.assertEqual((self.config.read_bytes(), self.secret.read_bytes()), before)
+
+    def test_remote_backend_is_refused_before_any_config_io(self):
+        from hermes_cli import config_backend
+        from unittest.mock import Mock
+        remote = Mock()
+        remote.name = "remote"
+        before = self.config.read_bytes(), self.secret.read_bytes()
+        with patch.object(config_backend, "get_config_backend", return_value=remote):
+            with self.assertRaises(SpeechError) as raised:
+                _NativeBackend()
+        self.assertEqual(raised.exception.category, "PREREQUISITE")
+        remote.read_user_doc.assert_not_called()
+        remote.write_changes.assert_not_called()
+        self.assertEqual((self.config.read_bytes(), self.secret.read_bytes()), before)
+
+    def test_backend_switch_after_plan_cannot_publish_settings(self):
+        from unittest.mock import Mock
+        self.admit()
+        plan = self.plan()
+        before = self.config.read_bytes()
+        remote = Mock()
+        remote.name = "remote"
+        with patch.object(self.backend, "_get_backend", return_value=remote):
+            with self.assertRaises(SpeechError) as raised:
+                plan.apply()
+        self.assertEqual(raised.exception.category, "STATE")
+        remote.write_changes.assert_not_called()
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_bound_file_writer_cannot_be_rerouted_by_ambient_dispatch(self):
+        from hermes_cli import config_backend
+        from unittest.mock import Mock
+        remote = Mock()
+        remote.name = "remote"
+        with patch.object(config_backend, "get_config_backend", return_value=remote):
+            self.assertIs(config_backend.get_config_backend(), remote)
+            self.backend._write(self.config, {"tts.voice": "ermil"})
+        remote.write_changes.assert_not_called()
+        self.assertEqual(self.backend.read()["tts"]["voice"], "ermil")
+        self.assertEqual(self.backend.read()["model"]["default"], "unrelated-model")
+
+    def test_native_installation_is_a_separate_admitted_prerequisite(self):
+        before = self.config.read_bytes(), self.secret.read_bytes()
+        plan = self.plan()
+        summary = plan.summary()
+        self.assertFalse(summary["safe_apply_available"])
+        self.assertTrue(any("hermes plugins enable" in step for step in summary["native_setup_steps"]))
+        with self.assertRaises(SpeechError) as raised:
+            plan.apply()
+        self.assertEqual(raised.exception.category, "PREREQUISITE")
+        self.assertEqual((self.config.read_bytes(), self.secret.read_bytes()), before)
         self.assertFalse((self.home / "plugins").exists())
+
+    def test_matching_native_installed_directory_is_preserved(self):
+        import shutil
+        self.admit()
+        link = self.home / "plugins/yandex-speech"
+        link.unlink()
+        shutil.copytree(self.plugin, link, ignore=shutil.ignore_patterns("__pycache__"))
+        report = self.plan().apply()
+        self.assertEqual(report["status"], "applied")
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(report["plugin"]["action"], "keep-native-installation")
+
+    def test_second_key_failure_reports_partial_state_without_snapshot_rollback(self):
+        self.admit()
+        plan = self.plan()
+        native = self.backend._write
+        calls = []
+        def fail_second(path, updates):
+            calls.append(updates)
+            if len(calls) == 2:
+                raise OSError("synthetic second-key failure")
+            return native(path, updates)
+        with patch.object(self.backend, "_write", side_effect=fail_second):
+            with self.assertRaises(SpeechError) as raised:
+                plan.apply()
+        self.assertIn("partially", str(raised.exception))
+        current = self.backend.read()
+        self.assertEqual(current["stt"]["provider"], "yandex")
+        self.assertEqual(current["tts"]["provider"], "old")
+        self.assertEqual(current["model"]["default"], "unrelated-model")
+        self.assertEqual(plan.plugin_link.resolve(), self.plugin.resolve())
+
+    def test_migration_commands_preserve_literal_preferences_before_removal(self):
+        self.admit()
+        data = self.backend.read()
+        data["tts"]["providers"] = {"yandex": {"type": "command",
+            "command": "env HERMES_TTS_VOICE=ermil HERMES_TTS_LANG=ru-RU " +
+                str(self.root / "scripts/hermes-tts-wrapper.sh") + " {input_path} {output_path}",
+            "output_format": "ogg", "voice_compatible": True}}
+        self.write(data)
+        steps = self.plan().summary()["native_migration_steps"]
+        import os
+        import shlex
+        import subprocess
+        import sys
+        parsed = [shlex.split(step) for step in steps]
+        voice = next(index for index, args in enumerate(parsed) if args[2:4] == ["set", "tts.voice"])
+        remove = next(index for index, args in enumerate(parsed) if args[2:] == ["unset", "tts.providers.yandex"])
+        select = next(index for index, args in enumerate(parsed) if args[2:4] == ["set", "tts.provider"])
+        self.assertEqual(parsed[voice][4], "ermil")
+        self.assertLess(voice, remove)
+        self.assertLess(remove, select)
+        environment = dict(os.environ, HERMES_HOME=str(self.home), HERMES_CONFIG_BACKEND="file",
+                           HERMES_SKIP_CHMOD="1", YANDEX_SPEECH_API_KEY="synthetic-offline-only")
+        for args in parsed:
+            result = subprocess.run([sys.executable, "-m", "hermes_cli.main", *args[1:]],
+                env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        current = self.backend.read()
+        self.assertEqual(current["tts"]["voice"], "ermil")
+        self.assertEqual(current["tts"]["provider"], "yandex")
+        self.assertNotIn("yandex", current["tts"].get("providers", {}))
+        self.assertEqual(current["model"]["default"], "unrelated-model")
+        self.assertEqual(self.secret.read_text(), "TEST_ONLY_SECRET=synthetic-owned-value\n")
+
+    def test_foreign_native_installed_directory_is_never_rewritten(self):
+        import shutil
+        self.admit()
+        entry = self.home / "plugins/yandex-speech"
+        entry.unlink()
+        shutil.copytree(self.plugin, entry, ignore=shutil.ignore_patterns("__pycache__"))
+        foreign = entry / "provider.py"
+        foreign.write_text("# foreign installation preserved\n")
+        before = self.config.read_bytes()
+        with self.assertRaises(SpeechError):
+            self.plan()
+        self.assertEqual(self.config.read_bytes(), before)
+        self.assertEqual(foreign.read_text(), "# foreign installation preserved\n")
 
 
 class NativeSetupCliTests(unittest.TestCase):

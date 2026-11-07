@@ -81,10 +81,12 @@ class BaselineTests(unittest.TestCase):
                 expected=2 if "--check" in command else 0
                 self.assertEqual(result.returncode,expected,result.stderr)
 
-            # Native enrollment must resolve the plugin from this installed payload.
+            # Profile selection must resolve an already admitted native plugin from the installed payload.
             profile=outside/"native-profile"
             profile.mkdir()
-            (profile/"config.yaml").write_text("tts:\n  voice: ermil\n")
+            (profile/"config.yaml").write_text("tts:\n  voice: ermil\nplugins:\n  enabled: [yandex-speech]\n")
+            (profile/"plugins").mkdir()
+            (profile/"plugins/yandex-speech").symlink_to(extracted/"integrations/hermes", target_is_directory=True)
             environment={"HOME":str(outside),"PATH":os.environ["PATH"],"PYTHONPATH":str(extracted),
                          "HERMES_HOME":str(profile),"YANDEX_SPEECH_API_KEY":"synthetic-offline-only",
                          "HERMES_TTS_VOICE":"ermil","HERMES_TTS_LANG":"ru-RU"}

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import copy
-import inspect
+import hashlib
+import json
 import os
 import stat
 from contextlib import contextmanager
@@ -26,6 +27,58 @@ def _plugin_root():
     raise SpeechError("PREREQUISITE", "install the complete native Yandex speech plugin payload")
 
 
+def _native_key_updates(before, after, prefix=""):
+    updates = {}
+    for name in sorted(before.keys() | after.keys(), key=lambda item: (type(item).__name__, str(item))):
+        if not isinstance(name, str) or "." in name:
+            if before.get(name) != after.get(name):
+                raise SpeechError("CONFIG", "native enrollment cannot address a changed nonstandard setting name")
+            continue
+        path = prefix + name
+        if name not in after:
+            updates[path] = None
+        elif name in before and before[name] == after[name]:
+            continue
+        elif isinstance(after[name], dict) and after[name] and (
+                name not in before or isinstance(before[name], dict)):
+            updates.update(_native_key_updates(before.get(name, {}), after[name], path + "."))
+        else:
+            updates[path] = copy.deepcopy(after[name])
+    return updates
+
+
+def _apply_native_key(document, path, value):
+    names = path.split(".")
+    parent = document
+    for name in names[:-1]:
+        parent = parent.setdefault(name, {})
+    if value is None:
+        parent.pop(names[-1], None)
+    else:
+        parent[names[-1]] = copy.deepcopy(value)
+
+
+def _migration_commands(before, after):
+    if not any((before.get(kind, {}).get("providers") or {}).get("yandex") is not None for kind in ("stt", "tts")):
+        return []
+    updates = _native_key_updates(before, after)
+    preferences, providers = [], []
+    for path, value in updates.items():
+        if not path.startswith(("stt.", "tts.")) or ".providers" in path:
+            continue
+        if value is None:
+            command = "hermes config unset " + shlex.quote(path)
+        else:
+            literal = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            command = "hermes config set " + shlex.quote(path) + " " + shlex.quote(literal)
+            if path not in {"stt.provider", "tts.provider"}:
+                command += " --force"
+        (providers if path in {"stt.provider", "tts.provider"} else preferences).append(command)
+    removals = ["hermes config unset " + kind + ".providers.yandex" for kind in ("stt", "tts")
+                if (before.get(kind, {}).get("providers") or {}).get("yandex") is not None]
+    return preferences + removals + providers
+
+
 class _NativeBackend:
     def __init__(self):
         try:
@@ -33,19 +86,45 @@ class _NativeBackend:
             from utils import fast_safe_load
             from hermes_cli.plugins_discovery import suppress_plugin_discovery
             with suppress_plugin_discovery():
-                from hermes_cli.config import atomic_config_replace
+                from hermes_cli import config_backend
         except ImportError:
-            raise SpeechError("PREREQUISITE", "native enrollment requires the supported Hermes runtime") from None
+            raise SpeechError("PREREQUISITE", "native enrollment requires supported stock Hermes configuration APIs") from None
         self._get_home = get_hermes_home
+        self._get_backend = config_backend.get_config_backend
+        try:
+            selected = self._get_backend()
+        except Exception:
+            raise SpeechError("CONFIG", "cannot select the native configuration backend; inspect it through Hermes config") from None
+        if getattr(selected, "name", None) != "file" or not selected.supports_file_tooling():
+            raise SpeechError("PREREQUISITE", "this helper supports only the stock file configuration backend; use native Hermes commands for remote profiles")
+        self._file_backend = selected
+        self._native_write = getattr(selected, "write_changes", None)
+        self._changes_type = getattr(config_backend, "Changes", None)
+        self._write = self._publish_keys
+        self.supports_key_updates = callable(self._native_write) and callable(self._changes_type)
         self.home = Path(get_hermes_home()).resolve()
         self.path = self.home / "config.yaml"
         self._read = fast_safe_load
-        self._write = atomic_config_replace
-        self.supports_expected_state = "expected_state" in inspect.signature(atomic_config_replace).parameters
 
     def _assert_scope(self):
         if Path(self._get_home()).resolve() != self.home:
             raise SpeechError("AUTH", "active Hermes profile changed during native enrollment")
+        try:
+            selected = self._get_backend()
+        except Exception:
+            raise SpeechError("STATE", "native configuration backend became unavailable") from None
+        if selected is not self._file_backend:
+            raise SpeechError("STATE", "native configuration backend changed during enrollment")
+
+    def _publish_keys(self, path, updates):
+        self._assert_scope()
+        if Path(path) != self.path:
+            raise SpeechError("AUTH", "native key publication targeted another profile")
+        changes = self._changes_type(
+            set={name: value for name, value in updates.items() if value is not None},
+            unset=tuple(name for name, value in updates.items() if value is None))
+        # Keep the selected file writer bound: an ambient selector race must never route this write remotely.
+        self._native_write(self.home, changes)
 
     def read(self):
         self._assert_scope()
@@ -66,17 +145,29 @@ class _NativeBackend:
 
     def write(self, value, *, expected_state=None):
         self._assert_scope()
-        if expected_state is not None and not self.supports_expected_state:
-            raise SpeechError("PREREQUISITE", "install the tested native configuration safety update before applying enrollment")
+        current = self.read()
+        if expected_state is not None and current != expected_state:
+            raise SpeechError("STATE", "profile configuration changed before native enrollment publication")
+        updates = _native_key_updates(current, value)
+        if updates and not self.supports_key_updates:
+            raise SpeechError("PREREQUISITE", "native key updates are unavailable; use stock Hermes configuration commands")
+        if expected_state is not None and any(path in updates for path in ("plugins.enabled", "plugins.disabled")):
+            raise SpeechError("PREREQUISITE", "plugin activation belongs to stock Hermes: run hermes plugins enable yandex-speech first")
+        progress = copy.deepcopy(current)
         try:
             from hermes_cli.plugins_discovery import suppress_plugin_discovery
             with suppress_plugin_discovery():
-                if expected_state is None:
-                    self._write(self.path, value)
-                else:
-                    self._write(self.path, value, expected_state=expected_state)
+                for path, item in updates.items():
+                    if self.read() != progress:
+                        raise SpeechError("STATE", "profile changed between native key updates; current settings retained, replan")
+                    self._write(self.path, {path: copy.deepcopy(item)})
+                    _apply_native_key(progress, path, item)
+                    if self.read() != progress:
+                        raise SpeechError("STATE", "native key read-back differs; settings may be partially applied, current values retained")
+        except SpeechError:
+            raise
         except (OSError, ValueError, RuntimeError):
-            raise SpeechError("STATE", "native profile publication failed; inspect the active profile before retrying") from None
+            raise SpeechError("STATE", "native key publication failed; settings may be partially applied, inspect and replan") from None
 
 
 def _put_preference(section, name, value):
@@ -248,16 +339,12 @@ def _reject_changed_aliases(before, after):
 
 @contextmanager
 def _plugin_directory(home):
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.symlink not in os.supports_dir_fd:
-        raise SpeechError("PREREQUISITE", "safe native enrollment requires directory-relative filesystem operations")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") :
+        raise SpeechError("PREREQUISITE", "safe post-install configuration requires directory-relative inspection")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     home_fd = os.open(home, flags)
     plugin_fd = None
     try:
-        try:
-            os.mkdir("plugins", mode=0o700, dir_fd=home_fd)
-        except FileExistsError:
-            pass
         plugin_fd = os.open("plugins", flags, dir_fd=home_fd)
 
         def verify():
@@ -302,62 +389,70 @@ class NativePlan:
                 raise SpeechError("CONFIG", "existing Yandex plugin link points to a different installation")
             return "present"
         if link.exists():
-            raise SpeechError("CONFIG", "existing Yandex plugin entry requires reconciliation before enrollment")
+            if not link.is_dir():
+                raise SpeechError("CONFIG", "existing Yandex plugin entry requires native reconciliation")
+            for name in ("__init__.py", "provider.py", "tts_provider.py", "plugin.yaml"):
+                installed, expected = link / name, self.plugin_target / name
+                if (installed.is_symlink() or not installed.is_file()
+                        or hashlib.sha256(installed.read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest()):
+                    raise SpeechError("CONFIG", "installed native plugin differs from this skill payload; reconcile through Hermes plugins")
+            return "native-installation"
         return "absent"
 
     def summary(self, *, applied=False):
         state = self._link_state()
+        selections = self.before.get("plugins") or {}
+        admitted = state != "absent" and "yandex-speech" in selections.get("enabled", []) and "yandex-speech" not in selections.get("disabled", [])
+        legacy = any((self.before.get(kind, {}).get("providers") or {}).get("yandex") is not None for kind in ("stt", "tts"))
+        steps = []
+        if state == "absent":
+            steps.append("hermes plugins install bizyumov/yandex-speech/integrations/hermes --ref COMMIT --no-enable")
+        if not admitted:
+            steps.append("hermes plugins enable yandex-speech")
         return {"status": "applied" if applied else "planned",
-                "profile_home": str(self.backend.home),
-                "config_file": str(self.backend.path),
+                "profile_home": str(self.backend.home), "config_file": str(self.backend.path),
                 "changes": _public_changes(self.before, self.after),
                 "plugin": {"path": str(self.plugin_link), "source": str(self.plugin_target),
-                           "action": "create-link" if state == "absent" else "keep-link"},
+                           "action": "native-install-required" if state == "absent" else "keep-native-installation" if state == "native-installation" else "keep-link"},
                 "availability": self.checks,
-                "safe_apply_available": bool(getattr(self.backend, "supports_expected_state", False)),
+                "safe_apply_available": admitted and not legacy and (
+                    self.before == self.after or bool(getattr(self.backend, "supports_key_updates", False))),
+                "native_setup_steps": steps,
+                "native_migration_steps": _migration_commands(self.before, self.after),
+                "write_semantics": {"kind": "stock-native-key-updates", "batch_atomic": False, "cross_process_cas": False,
+                                    "plugin_activation": "separate-native-cli"},
                 "changed": self.before != self.after or state == "absent"}
 
     def apply(self):
         report = self.summary()
-        if not getattr(self.backend, "supports_expected_state", False):
-            raise SpeechError("PREREQUISITE", "install the tested native configuration safety update before applying enrollment")
         if self.backend.read() != self.before:
             raise SpeechError("STATE", "profile configuration changed after native enrollment planning")
-        self._link_state()
-        created = None
-        with _plugin_directory(self.backend.home) as (directory, verify):
-            try:
-                try:
-                    os.symlink(str(self.plugin_target), "yandex-speech", dir_fd=directory)
-                    info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
-                    created = info.st_dev, info.st_ino
-                except FileExistsError:
-                    info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
-                    target = os.stat("yandex-speech", dir_fd=directory)
-                    expected = self.plugin_target.stat()
-                    if not stat.S_ISLNK(info.st_mode) or (target.st_dev, target.st_ino) != (expected.st_dev, expected.st_ino):
-                        raise SpeechError("CONFIG", "existing plugin entry changed before enrollment")
-                verify()
-                if self.backend.read() != self.before:
-                    raise SpeechError("STATE", "profile configuration changed before native enrollment publication")
-                if self.after != self.before:
-                    self.backend.write(copy.deepcopy(self.after), expected_state=self.before)
-                    if self.backend.read() != self.after:
-                        raise SpeechError("STATE", "native profile read-back does not match the enrollment plan")
-                verify()
-            except Exception:
-                try:
-                    unchanged = self.backend.read() == self.before
-                except Exception:
-                    unchanged = False
-                if created is not None and unchanged:
-                    try:
-                        info = os.stat("yandex-speech", dir_fd=directory, follow_symlinks=False)
-                    except FileNotFoundError:
-                        info = None
-                    if info is not None and (info.st_dev, info.st_ino) == created:
-                        os.unlink("yandex-speech", dir_fd=directory)
-                raise
+        state = self._link_state()
+        selections = self.before.get("plugins") or {}
+        if (state == "absent" or "yandex-speech" not in selections.get("enabled", [])
+                or "yandex-speech" in selections.get("disabled", [])):
+            raise SpeechError("PREREQUISITE", "install and enable this plugin through stock Hermes plugins commands first; "
+                              "native admission owns dependency changes, this helper does not install or activate code")
+        if self.after == self.before:
+            if self.backend.read() != self.before:
+                raise SpeechError("STATE", "profile changed during no-op verification")
+            report["status"] = "applied"
+            return report
+        if not getattr(self.backend, "supports_key_updates", False):
+            raise SpeechError("PREREQUISITE", "native key updates are unavailable; use stock Hermes configuration commands")
+        if any((self.before.get(kind, {}).get("providers") or {}).get("yandex") is not None for kind in ("stt", "tts")):
+            raise SpeechError("PREREQUISITE", "automatic legacy-command migration cannot be atomic on this stock file backend; "
+                              "review the plan and use hermes config unset stt.providers.yandex or tts.providers.yandex explicitly")
+        with _plugin_directory(self.backend.home) as (_, verify):
+            verify()
+            self._link_state()
+            if self.backend.read() != self.before:
+                raise SpeechError("STATE", "profile configuration changed before native key publication")
+            self.backend.write(copy.deepcopy(self.after), expected_state=self.before)
+            if self.backend.read() != self.after:
+                raise SpeechError("STATE", "native profile read-back differs; updates may be partial, current configuration retained")
+            verify()
+            self._link_state()
         report["status"] = "applied"
         return report
 
@@ -403,6 +498,7 @@ def plan_native(*, enable_stt_streaming=False, enable_tts_pcm=False,
     plugins["enabled"] = enabled
     if "yandex-speech" not in enabled:
         enabled.append("yandex-speech")
+        enabled[:] = sorted(set(enabled))
     if "disabled" in plugins:
         plugins["disabled"] = [name for name in plugins["disabled"] if name != "yandex-speech"]
     if _providers is None:

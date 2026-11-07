@@ -11,13 +11,18 @@ permissions:
 
 jobs:
   acceptance:
-    name: Standard Hermes / ${{ matrix.profile }}
+    name: ${{ matrix.hermes.version == '0.23.0' && format('Standard Hermes / {0}', matrix.profile) || format('Hermes 0.22.5 / {0}', matrix.profile) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         profile: [base, grpc, storage]
+        hermes:
+          - version: "0.22.5"
+            commit: bf0203a794a07aac3ff764972ab9087baa4e4f4e
+          - version: "0.23.0"
+            commit: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19
     env:
       UV_PROJECT_ENVIRONMENT: /opt/hermes/venv
       UV_NO_PROGRESS: "1"
@@ -25,10 +30,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
-          python-version: "3.14.9"
+          python-version: "3.14.10"
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
-          version: "0.9.29"
+          version: "0.11.26"
       - name: Prepare the canonical standard Hermes runtime
         shell: bash
         run: |
@@ -36,11 +41,11 @@ jobs:
           sudo apt-get install -y ffmpeg
           sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hermes
           git init /opt/hermes/src
-          git -C /opt/hermes/src remote add origin https://github.com/bizyumov/hermes-agent.git
-          git -C /opt/hermes/src fetch --depth 1 origin d70347878ae939e09d140839e7def0f127df5344
-          git -C /opt/hermes/src checkout -b native-speech-accepted FETCH_HEAD
-          test "$(git -C /opt/hermes/src rev-parse HEAD)" = d70347878ae939e09d140839e7def0f127df5344
-          uv sync --project /opt/hermes/src --frozen --no-dev --python "$(command -v python)"
+          git -C /opt/hermes/src remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C /opt/hermes/src fetch --depth 1 origin "${{ matrix.hermes.commit }}"
+          git -C /opt/hermes/src checkout -b "upstream-${{ matrix.hermes.version }}" FETCH_HEAD
+          test "$(git -C /opt/hermes/src rev-parse HEAD)" = "${{ matrix.hermes.commit }}"
+          uv sync --project /opt/hermes/src --frozen --no-default-groups --python "$(command -v python)"
           printf 'VIRTUAL_ENV=%s\n' "$UV_PROJECT_ENVIRONMENT" >> "$GITHUB_ENV"
           printf '%s/bin\n' "$UV_PROJECT_ENVIRONMENT" >> "$GITHUB_PATH"
       - name: Install development tools in the configured runtime
@@ -49,7 +54,7 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ matrix.profile }}" == grpc ]]; then
-            uv pip install --python python -r requirements-grpc.txt "protobuf==6.33.6" "googleapis-common-protos==1.75.1" "requests==2.33.0"
+            uv pip install --python python -r requirements-grpc.txt "grpcio-tools==1.76.0" "protobuf==6.33.6"
           fi
           if [[ "${{ matrix.profile }}" == storage ]]; then
             uv pip install --python python "boto3==1.42.89"
@@ -58,7 +63,7 @@ jobs:
       - name: Validate native dependency constraints
         shell: bash
         run: |
-          python -c 'import subprocess,sys; from pathlib import Path; from pm.pip_check import unexpected_incompatibilities; r=subprocess.run(["uv","pip","check","--python",sys.executable],capture_output=True,text=True); problems=unexpected_incompatibilities(r.stdout+r.stderr,Path("/opt/hermes/src/uv.lock")); print("Unexpected dependency incompatibilities:",len(problems)); sys.exit(bool(problems))'
+          python -c 'import subprocess,sys; from pathlib import Path; from pm.pip_check import unexpected_incompatibilities; r=subprocess.run(["uv","pip","check","--python",sys.executable],capture_output=True,text=True); problems=[] if r.returncode == 0 else unexpected_incompatibilities(r.stdout+r.stderr,Path("/opt/hermes/src/uv.lock")); print("Unexpected dependency incompatibilities:", "unreadable report" if problems is None else len(problems)); sys.exit(problems is None or bool(problems))'
       - name: Run offline acceptance
         run: python -m tests --phase 3 --profile ${{ matrix.profile }}
       - name: Verify source and wrapper syntax
@@ -70,6 +75,6 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
-          name: phase3-${{ matrix.profile }}-evidence
+          name: hermes-${{ matrix.hermes.version }}-${{ matrix.profile }}-evidence
           path: .agent/tasks/public-release/testing-evidence/phase3-*.json
           include-hidden-files: true
