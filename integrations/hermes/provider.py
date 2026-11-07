@@ -1,4 +1,5 @@
 """Expose live failures and preserve Hermes's nonraising completion envelopes."""
+import contextvars
 import logging
 import threading
 from pathlib import Path
@@ -37,7 +38,7 @@ def _failure(error):
 
 
 class YandexStreamSession(TranscriptionStreamSession):
-    def __init__(self, core):
+    def __init__(self, core, *, capture=None):
         self.core = core
         self._error = None
         self._result = None
@@ -47,6 +48,15 @@ class YandexStreamSession(TranscriptionStreamSession):
         self._finalizing = False
         self._state_lock = threading.RLock()
         self._finalize_lock = threading.Lock()
+        self._capture = capture
+        if capture is not None:
+            capture.bind_inner(self)
+
+    @property
+    def failure(self):
+        with self._state_lock:
+            self._sync_core_failure()
+            return self._error
 
     def _refresh_cached_failure(self):
         if self._result is None or self._result.get("success"):
@@ -108,6 +118,11 @@ class YandexStreamSession(TranscriptionStreamSession):
         with self._state_lock:
             if self._error is not None:
                 raise self._error
+        if self._capture is not None:
+            try:
+                self._capture.acknowledge(len(chunk))
+            except Exception as error:
+                raise self._remember_failure(error, "acknowledge") from None
 
     def partial_transcript(self):
         with self._state_lock:
@@ -187,6 +202,8 @@ class YandexTranscriptionProvider(TranscriptionProvider):
         self._profile_secrets = _secret_resolver is None
         self._secret_resolver=_secret_resolver or self._scoped_secret
         self._client_factory=_client_factory
+        self._discord_ingress = None
+        self._opening_capture = contextvars.ContextVar("yandex_live_capture", default=None)
 
     def _scoped_secret(self):
         return profile_secret(self.workspace, "YANDEX_SPEECH_API_KEY")
@@ -248,6 +265,13 @@ class YandexTranscriptionProvider(TranscriptionProvider):
         try:
             if model not in {None, "general"}:
                 raise SpeechError("CONFIG", "unsupported Yandex recognition model selection")
+            ingress = self._discord_ingress
+            if ingress is not None:
+                deferred = ingress.file_policy.decide(file_path)
+                if deferred is not None:
+                    ingress.note_file_deferred()
+                    return deferred
+                ingress.note_recorded_asr()
             result = self._client(language).transcribe_auto(file_path)
             return _envelope(result)
         except Exception as error:
@@ -258,4 +282,4 @@ class YandexTranscriptionProvider(TranscriptionProvider):
             raise SpeechError("PREREQUISITE",self.streaming_unavailable_reason)
         core=self._client(language).open_stream(
             audio_input=AudioInputSpec("lpcm","s16le",16000,1))
-        return YandexStreamSession(core)
+        return YandexStreamSession(core, capture=self._opening_capture.get())
