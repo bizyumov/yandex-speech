@@ -69,6 +69,9 @@ class _LegacySpeechTranscriber:
             if audio.container == "OGG_OPUS" and audio.channels == 1:
                 content=audio.path.read_bytes()
                 params={"format":"oggopus"}
+            elif audio.container == "LPCM" and audio.channels == 1 and audio.sample_rate_hertz == 16000:
+                content = audio.path.read_bytes()
+                params = {"format": "lpcm", "sampleRateHertz": "16000"}
             elif audio.container == "WAV" and audio.channels == 1:
                 with wave.open(str(audio.path),"rb") as stream:
                     content=stream.readframes(stream.getnframes())
@@ -119,35 +122,66 @@ class _LegacySpeechTranscriber:
             return self.transcribe_chunked_direct(path, language_code=language_code, diarize=diarize)
 
     def transcribe_chunked_direct(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
+        import os
+        from yandex_speech.media import AudioInputSpec
+        from yandex_speech.overlap import assemble_text, pcm_windows
+
+        if diarize:
+            raise SttError("v1 split recognition does not provide speaker labels")
         if not has_ffmpeg():
-            raise SttError("legacy split recognition requires ffmpeg")
-        with prepare_audio(Path(path),audio_input=getattr(self,"audio_input",None),
-                           audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as prepared:
-            with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as tmp:
-                pattern=Path(tmp)/"chunk_%03d.ogg"
-                raw_args=(["-f","s16le","-ar",str(prepared.sample_rate_hertz),"-ac",str(prepared.channels)]
-                          if prepared.container == "LPCM" else [])
-                result=subprocess.run(["ffmpeg","-nostdin","-v","error",*raw_args,
-                    "-i",str(prepared.path),"-ac","1","-ar","16000","-c:a","libopus",
-                    "-b:a","16k","-f","segment","-segment_time","25","-reset_timestamps","1",
-                    str(pattern)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
-                    timeout=self._remaining())
-                chunks=sorted(Path(tmp).glob("chunk_*.ogg"))
-                if result.returncode or not chunks:
-                    raise SttError("legacy ffmpeg splitting failed")
-                texts,segments,raw=[],[],[]
-                for chunk in chunks:
-                    child=_LegacySpeechTranscriber(self.api_key,self.folder_id)
-                    child.session=self.session
-                    if hasattr(self,"deadline_at"):
-                        child.deadline_at=self.deadline_at
-                    data=child.transcribe_direct(chunk,language_code=language_code,diarize=diarize)
-                    texts.append(data.get("text",""))
-                    segments.extend(data.get("segments",[]))
-                    raw.append(data.get("raw"))
-                return {"text":"\n".join(t for t in texts if t),
-                        "segments":segments,"raw":{"chunks":raw},"mode":"direct-chunked",
-                        "diarization_requested":False,"source_info":prepared.source_info}
+            raise SpeechError("PREREQUISITE", "ffmpeg is required for split recognition")
+        with prepare_audio(Path(path), audio_input=getattr(self, "audio_input", None),
+                           audio_track=getattr(self, "audio_track", None),
+                           timeout=self._remaining()) as prepared:
+            with tempfile.TemporaryDirectory(prefix="yandex-stt-chunks-") as directory:
+                decoded = Path(directory) / "source.pcm"
+                raw_args = (["-f", "s16le", "-ar", str(prepared.sample_rate_hertz),
+                             "-ac", str(prepared.channels)] if prepared.container == "LPCM" else [])
+                descriptor = os.open(decoded, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(descriptor, "wb") as output:
+                    try:
+                        process = subprocess.run(
+                            ["ffmpeg", "-nostdin", "-v", "error", "-xerror", *raw_args,
+                             "-i", str(prepared.path), "-map", "0:a:0", "-vn",
+                             "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+                            stdout=output, stderr=subprocess.PIPE, timeout=self._remaining())
+                    except subprocess.TimeoutExpired:
+                        raise SpeechError("TIMEOUT", "split audio preparation exceeded its deadline") from None
+                if process.returncode or decoded.stat().st_size % 2:
+                    raise SpeechError("UNSUPPORTED_AUDIO", "split source could not be decoded completely")
+                hypotheses, raw, windows = [], [], []
+                with decoded.open("rb") as source:
+                    for window in pcm_windows(decoded.stat().st_size // 2):
+                        self._remaining()
+                        source.seek(window.start_sample * 2)
+                        content = source.read(window.byte_length)
+                        if len(content) != window.byte_length:
+                            raise SpeechError("STATE", "prepared split source changed during extraction")
+                        chunk = Path(directory) / f"window_{window.index:06d}.pcm"
+                        descriptor = os.open(chunk, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                        with os.fdopen(descriptor, "wb") as output:
+                            output.write(content)
+                        child = _LegacySpeechTranscriber(self.api_key, self.folder_id)
+                        child.session = self.session
+                        child.audio_input = AudioInputSpec("lpcm", "s16le", 16000, 1)
+                        if hasattr(self, "deadline_at"):
+                            child.deadline_at = self.deadline_at
+                        data = child.transcribe_direct(chunk, language_code=language_code, diarize=False)
+                        hypotheses.append(data.get("text", ""))
+                        raw.append(data.get("raw"))
+                        windows.append(window.metadata(prepared.source_info.get("timeline_offset_seconds", 0)))
+                assembled = assemble_text(hypotheses)
+                text = assembled["text"]
+                info = dict(prepared.source_info)
+                info.update({"converted": True, "duration_ms": decoded.stat().st_size / 32,
+                             "size_bytes": decoded.stat().st_size,
+                             "prepared": {"container": "LPCM", "sample_rate_hertz": 16000, "channels": 1}})
+                return {"text": text,
+                        "segments": [{"start": None, "end": None, "speaker": None, "text": text}] if text else [],
+                        "raw": {"chunks": raw, "windows": windows,
+                                "hypotheses": assembled["raw_hypotheses"]},
+                        "uncertainties": assembled["uncertainties"], "mode": "direct-chunked",
+                        "diarization_requested": False, "source_info": info}
 
     def transcribe_async_s3(self, path: Path, *, language_code: str, diarize: bool, poll_interval: float = 5.0) -> dict[str, Any]:
         uri = upload_to_object_storage(path, _storage=getattr(self, "storage", None))

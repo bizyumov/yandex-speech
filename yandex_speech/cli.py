@@ -161,6 +161,11 @@ def transcribe_main(argv=None):
             result=client.poll_until_complete(job)
         if not result.get("input_complete"):
             raise SpeechError("OUTPUT_PARTIAL","incomplete input cannot be published as a transcript")
+        overlap_notes = [note for note in result.get("uncertainties", [])
+                         if note.get("kind", "").startswith("overlap-")]
+        if overlap_notes:
+            print(f"Overlap reconciliation: {len(overlap_notes)} boundary caveats; "
+                  "text-only alignment has no word-time proof.", file=sys.stderr)
         write_output(result,args.output,fmt,overwrite=args.overwrite)
         print(args.output)
         return 0
