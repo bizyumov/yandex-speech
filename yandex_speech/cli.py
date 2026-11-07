@@ -49,6 +49,10 @@ def build_parser():
     parser.add_argument("--sample-rate",type=int)
     parser.add_argument("--channels",type=int)
     parser.add_argument("--stream",action="store_true")
+    parser.add_argument("--split-inline", action="store_true",
+        help="Explicitly recognize all API v3 inline parts with context overlap, bypassing configured storage")
+    parser.add_argument("--allow-partitioned-speakers", action="store_true",
+        help="Allow separate anonymous speaker identities for each inline recognition job")
     parser.add_argument("--bucket",help="Existing authorized Object Storage bucket for API v2/v3; never creates one")
     return parser
 
@@ -87,6 +91,10 @@ def transcribe_main(argv=None):
     try:
         _preflight_output(args.output,args.overwrite)
         recovering=args.resume is not None or args.operation_id is not None
+        if args.split_inline and (recovering or args.stream or args.mode not in {None, "auto", "async"}):
+            raise SpeechError("CONFIG", "--split-inline requires a new asynchronous API v3 recording")
+        if args.allow_partitioned_speakers and not args.split_inline:
+            raise SpeechError("CONFIG", "--allow-partitioned-speakers requires --split-inline")
         if recovering:
             if (args.mode is not None or args.language_code is not None or args.diarize is not None
                     or args.timestamps is not None or args.literature_text is not None
@@ -102,6 +110,8 @@ def transcribe_main(argv=None):
             adapter["object_storage"]={"bucket":args.bucket}
         settings=resolve_settings(_context=context,_adapter=adapter)
         effective_version=args.api_version or settings.value("api_version")
+        if args.split_inline and effective_version not in {"auto", "3"}:
+            raise SpeechError("CONFIG", "--split-inline requires --api-version auto or 3")
         if args.mode == "async-s3":
             if effective_version not in {"auto", "2"}:
                 raise SpeechError("CONFIG", "async-s3 is explicit API v2; selected version conflicts")
@@ -133,8 +143,17 @@ def transcribe_main(argv=None):
         if fmt in {"srt","vtt"} and args.timestamps is None:
             options["timestamps"]=True
         if args.resume or args.operation_id:
-            result=client.poll_until_complete(_resume_path(args.resume) if args.resume else args.operation_id,
-                api_version=args.api_version,transport=args.transport,deadline_seconds=args.deadline_seconds)
+            recovery = _resume_path(args.resume) if args.resume else args.operation_id
+            partitioned = False
+            if args.resume:
+                from .jobs import JobHandle
+                saved = JobHandle.load(recovery)
+                partitioned = saved.data.get("mode") == "async-partitioned"
+                if partitioned:
+                    recovery = client.resume_partitioned_transcription(saved, api_version=args.api_version,
+                                                                      deadline_seconds=args.deadline_seconds)
+            result=client.poll_until_complete(recovery, api_version=args.api_version, transport=args.transport,
+                deadline_seconds=None if partitioned else args.deadline_seconds)
         elif args.stream:
             descriptor=AudioInputSpec(args.audio_format,args.sample_format,args.sample_rate,args.channels)
             with client.open_stream(audio_input=descriptor,deadline_seconds=args.deadline_seconds,**options) as stream:
@@ -172,6 +191,8 @@ def transcribe_main(argv=None):
                 print(f"Recovery receipt: {manifest}", file=sys.stderr)
             recording = dict(audio_input=descriptor, audio_track=args.audio_track, bucket=args.bucket,
                 deadline_seconds=args.deadline_seconds, _on_prepared=prepared, _on_accepted=accepted, **options)
+            if args.split_inline:
+                recording.update(split_inline=True, allow_partitioned_speakers=args.allow_partitioned_speakers)
             if args.mode in {None, "auto"}:
                 result = client.transcribe_auto(Path(args.input), _require_job=explicit_job_file, **recording)
             else:

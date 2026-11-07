@@ -10,7 +10,7 @@
 | REST v2 async-s3 / explicit API v2 | Implemented compatibility with durable recovery | Version-specific operation-contained chunks and genuine timing; no native speaker labeling. Readable source URI needs no boto3; helper uploads use separate storage access. |
 | REST v3 + S3 or eligible inline | Implemented; auto selects it when gRPC dependencies are absent | Whole-file timing/labeling without generated SDK dependencies. Readable URI use needs no upload SDK. Inline JSON includes base64 overhead; uploads need an existing authorized bucket and separate credentials. |
 
-Auto mode follows gRPC v3 → REST v3 with S3/eligible inline → FFmpeg split + REST v1. A route may change after local preflight failure before recognition submission; accepted/uncertain operations and result failures never submit again. Fixed API versions and grpc/rest selections are strict. The v1 tier requires auto/1, auto/rest, no required timing/speakers and resolved `literature_text=false`; explicit v1 selection retains its unsupported-literary indication. Default literary true/required speaker or timing output cannot silently become unformatted v1 text. Over-limit asynchronous partitioning remains unfinished.
+Auto mode follows gRPC v3 → REST v3 with S3/eligible inline → FFmpeg split + REST v1. A route may change after local preflight failure before recognition submission; accepted/uncertain operations and result failures never submit again. Fixed API versions and grpc/rest selections are strict. The v1 tier requires auto/1, auto/rest, no required timing/speakers and resolved `literature_text=false`; explicit v1 selection retains its unsupported-literary indication. Default literary true/required speaker or timing output cannot silently become unformatted v1 text. Explicit v3 inline partitioning is available through `--split-inline`, with durable child recovery and request-local speaker identities.
 
 For a short text-only input, transport=auto plus API auto/1 and `literature_text=false` can select one direct v1 request. An explicitly configured cloud preference is honored first when locally ready. Missing optional upload credentials/SDK can exclude preferred storage while leaving eligible inline requests available. A definite storage-only upload rejection can also exclude that upload; SpeechKit authentication/permission errors and uncertain mutations stop instead of cycling routes. Explicit `use_storage=True` or `--bucket` requires that chosen upload path. Routing reasons and actual attempts remain in the result/private job, without claiming that dependency/key presence verifies IAM access.
 
@@ -37,6 +37,49 @@ Use `--mode async --transport rest --api-version 2 --bucket EXISTING_PRIVATE_BUC
 Both versions save durable jobs. Recover with `--resume SAVED.job.json --transport rest`, or `--operation-id ID --api-version 2|3 --transport rest`. The saved version and parameters override current submission defaults; an explicit conflicting recovery version fails before any request. REST can retrieve a gRPC-submitted v3 operation without submitting its source again. The job records its original submission transport, while the result names the actual retrieval transport. A verified cached result needs neither source media nor a provider call.
 
 An accepted or uncertain operation never falls through to a new paid submission. Failed new submissions expose their exact private receipt through `SpeechError.receipt_path` and CLI stderr. Read-only polling/result retries are bounded. REST gateway events retain their original JSON and genuine timing; truncated, malformed or metadata-only streams do not become successful empty transcripts. Missing required word times or speaker labels fails the operation instead of silently dropping that requirement. [v3 submission](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/AsyncRecognizer/recognizeFile) · [v3 results](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/AsyncRecognizer/getRecognition) · [v2 schema](https://aistudio.yandex.ru/en/docs/speechkit/stt/api/transcribation-api).
+
+### Explicit v3 inline partitions
+
+An oversized prepared file is a local admission failure. The error reports the actual complete-request byte cap (currently 60 MB, or 60,000,000 bytes), any smaller effective audio-content cap, and the prepared size when known. REST base64/UTF-8 and gRPC protobuf metadata share that request budget.
+
+Choose an existing authorized **Yandex Object Storage (S3-compatible storage)** bucket when one whole-file job fits its duration/size bounds:
+
+```bash
+python scripts/transcribe.py recording.mp3 --mode async --api-version 3 --transport rest --bucket EXISTING_PRIVATE_BUCKET --timestamps --format json --output stored.json
+```
+
+Or explicitly recognize the complete local recording in inline parts, without manual audio editing:
+
+```bash
+python scripts/transcribe.py recording.mp3 --mode async --api-version 3 --transport rest --split-inline --timestamps --format json --output partitioned.json
+python scripts/transcribe.py --resume partitioned.job.json --format srt --output recovered.srt
+```
+
+A configured storage preference remains the ordinary default. `--split-inline` explicitly bypasses that preference; do not combine it with `--bucket`. Neither the diagnostic nor either command provisions a bucket or changes IAM/access policies. Existing upload and SpeechKit permissions must already authorize the selected storage operation.
+
+Partitioning decodes one invocation-owned PCM recording and writes complete, probed WAV parts. Ordinary stereo is preserved; native speaker labeling prepares mono. Part boundaries use integer sample frames, five seconds of context where possible, and the selected transport's actual full-wire and duration caps. All required parts are prepared and admitted before the first recognition submission. Original media remains unchanged.
+
+The private parent receipt retains frozen request parameters, source identity, complete frame geometry, part hashes and each child's separate receipt/operation/result references. Initial submission and resume share one ownership lock. Child acceptance is authoritative even if saving the parent then fails. `--resume` retrieves accepted work and may explicitly submit only parts whose durable state proves they were never sent; unknown acceptance never authorizes another paid request. A valid cached aggregate can render another format without source media, child files, credentials or a provider call. A recovery `--transport` changes retrieval only; pending submissions keep their saved transport/admission policy.
+
+Python uses the same explicit choice:
+
+```python
+from pathlib import Path
+from yandex_speech import SpeechTranscriber
+
+client = SpeechTranscriber()
+job = client.start_transcription(Path("recording.mp3"), split_inline=True, timestamps=True)
+result = client.poll_until_complete(job)
+# After interruption: explicitly continue never-sent parts, retaining accepted IDs.
+job = client.resume_partitioned_transcription(job.manifest_path)
+result = client.poll_until_complete(job)
+```
+
+Adjacent overlap is removed only for a unique, bounded suffix/prefix match backed by genuine word times. A timed cut word can retain the following complete form; repeated phrases at different times survive. Raw child results remain unchanged. If literary text cannot be mapped to timed raw words, or the boundary is ambiguous, both hypotheses remain with structured uncertainty rather than invented alignment. Inspect JSON's `assembly_boundaries`, `uncertainties` and `raw` for these cases.
+
+Diarization across several requests is refused by default: prefer one authorized whole-file storage job when possible. `--split-inline --diarize --allow-partitioned-speakers` explicitly permits separate anonymous identities such as `part-0/1` and `part-1/1`; these names are visible in JSON, TXT and subtitles and do not identify the same person across jobs. Every required child and the assembly step must complete before `input_complete=true`.
+
+Full provider acceptance for recordings longer than four hours remains pending; sample-coverage and small-wire boundary tests do not establish a measured maximum duration.
 
 ## Recorded split recognition
 

@@ -128,7 +128,7 @@ def main(argv=None):
         manifest=read_manifest(ROOT/"tests/acceptance.json",phase=args.phase)
         coverage={}
         omitted={"test_grpc_file","test_job_recovery","test_lifecycle","test_stream_api",
-                     "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream"} if args.profile != "grpc" else set()
+                     "test_streaming","test_timeline","test_hermes","test_tts_grpc","test_tts_stream","test_partition_grpc"} if args.profile != "grpc" else set()
         if args.profile != "storage":
             omitted.add("test_storage_sdk")
         for ac,record in manifest["acceptance"].items():

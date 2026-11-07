@@ -47,6 +47,8 @@ def _prepared_job(error):
         job = JobHandle.load(error.receipt_path)
     except SpeechError:
         return None
+    if job.data.get("mode") == "async-partitioned":
+        return None
     return job if job.status == "prepared" and not job.operation_ids else None
 
 

@@ -12,16 +12,31 @@ MAX_FILE_DURATION_MS = 14_400_000
 MAX_STORAGE_BYTES = 1_000_000_000
 
 
+def inline_size_error(size, limit, *, representation="prepared audio", audio_limit=None, prepared_size=None):
+    detail = f"{representation} is {size} bytes; inline request limit is {limit} bytes ({limit / 1_000_000:g} MB). "
+    if audio_limit is not None:
+        detail += f"The effective audio-content cap is {audio_limit} bytes after transport encoding/envelope. "
+    if prepared_size is not None:
+        detail += f"Prepared audio is {prepared_size} bytes. "
+    return SpeechError("LIMIT", detail +
+        "Choose existing authorized Yandex Object Storage (S3-compatible storage): "
+        "python scripts/transcribe.py INPUT --mode async --api-version 3 --transport rest "
+        "--bucket EXISTING_BUCKET --output OUTPUT; or explicitly recognize every inline part: "
+        "python scripts/transcribe.py INPUT --mode async --api-version 3 --transport rest "
+        "--split-inline --output OUTPUT. Configured storage defaults remain usable; "
+        "this diagnostic starts no paid request or infrastructure change.")
+
 def file_source(audio=None, *, uri=None, source_info=None, inline_limit=MAX_INLINE_BYTES,
-                duration_limit=MAX_FILE_DURATION_MS, storage_limit=MAX_STORAGE_BYTES, mono_required=False):
+                duration_limit=MAX_FILE_DURATION_MS, storage_limit=MAX_STORAGE_BYTES, mono_required=False,
+                inline_wire_limit=None):
     if uri is None:
         if audio is None:
             raise SpeechError("CONFIG", "prepared audio is required")
         duration, size, container, rate, channels = (
             audio.duration_ms, audio.size_bytes, audio.container, audio.sample_rate_hertz, audio.channels)
         if type(size) is not int or size < 0 or size > inline_limit:
-            raise SpeechError("LIMIT", f"prepared audio is {size} bytes; this inline request admits at most "
-                              f"{inline_limit} audio bytes; use authorized Yandex Object Storage or explicit partitioning")
+            raise inline_size_error(size, inline_wire_limit if inline_wire_limit is not None else inline_limit,
+                                    audio_limit=inline_limit)
     else:
         try:
             parsed = urlparse(str(uri))
