@@ -18,7 +18,7 @@ from urllib.parse import quote, urlsplit
 from .artifacts import atomic_write, private_job_dir
 from .config import RuntimeContext, resolve_settings
 from .errors import SpeechError
-from .media import prepare_audio
+from .media import prepare_recording_audio
 
 _MAX_OBJECT_BYTES = 1_000_000_000
 _MAX_DURATION_MS = 14_400_000
@@ -199,6 +199,8 @@ class ObjectStorageUploader:
                                     _environment=self.environment,
                                     _explicit={"object_storage": explicit} if explicit else {})
         storage = settings.value("object_storage")
+        self._api_version = settings.value("api_version")
+        self._diarize = settings.value("enable_diarization")
         self.bucket, self.endpoint, self.prefix = _coordinates(
             storage.get("bucket"), storage.get("endpoint"), storage.get("prefix"))
         self._access = aws_access_key_id
@@ -239,12 +241,18 @@ class ObjectStorageUploader:
         finally:
             client.close()
 
-    def upload(self, path, *, audio_input=None, audio_track=None, deadline_seconds=1800):
+    def upload(self, path, *, audio_input=None, audio_track=None, api_version=None,
+               diarize=None, deadline_seconds=1800):
         deadline = _deadline(deadline_seconds)
+        version = self._api_version if api_version is None else str(api_version)
+        version = "3" if version == "auto" else version
+        diarize = self._diarize if diarize is None else diarize
+        if version not in {"2", "3"} or type(diarize) is not bool or version == "2" and diarize:
+            raise SpeechError("CONFIG", "storage preparation requires compatible API v2/v3 features")
         if self._provided_client is None:
             self._credentials()
-        with prepare_audio(Path(path), audio_input=audio_input, audio_track=audio_track,
-                           timeout=_remaining(deadline)) as prepared:
+        with prepare_recording_audio(Path(path), api_version=version, diarize=diarize, audio_input=audio_input,
+                                     audio_track=audio_track, timeout=_remaining(deadline)) as prepared:
             if (prepared.duration_ms > _MAX_DURATION_MS or prepared.size_bytes > _MAX_OBJECT_BYTES):
                 raise SpeechError("LIMIT", "prepared audio requires partitioning before a single storage upload")
             if prepared.channels not in (1, 2):

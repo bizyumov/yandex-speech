@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Add SDK-independent REST v3 recording recognition, explicit durable v2/S3, version-preserving recovery across gRPC/REST, exact JSON-wire admission and genuine metadata enforcement; prepare WAV as headerless PCM for v2 and scope native storage credentials to the owning Hermes profile.
+
 - Add public owned-upload receipts, conditional no-clobber S3 creation, metadata-based uncertain-upload recovery and explicit exact-version cleanup after durable recognition; retain unversioned sources safely.
 
 - Recognize split recordings through exact 30-second PCM windows with five-second overlap; retain adjacent-boundary alternatives, cut-word evidence and legitimate repeated speech without invented timing.

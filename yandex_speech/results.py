@@ -18,6 +18,8 @@ def event_dict(event) -> dict:
 def _seconds(value):
     if value is None:
         return None
+    if type(value) not in (int, float, str):
+        raise SpeechError("PROVIDER", "invalid provider timing")
     try:
         number = float(value) / 1000
     except (ValueError, TypeError):
@@ -25,6 +27,13 @@ def _seconds(value):
     if not math.isfinite(number) or number < 0:
         raise SpeechError("PROVIDER", "invalid provider timing")
     return number
+
+def _channel(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SpeechError("PROVIDER", "invalid provider channel tag")
+    return value
 
 
 class ResultAccumulator:
@@ -41,8 +50,8 @@ class ResultAccumulator:
 
     def feed(self, response):
         event = event_dict(response)
-        self.raw.append(event)
-        channel = str(event.get("channel_tag") or "")
+        self.raw.append(event.pop("_raw_provider_event") if "_raw_provider_event" in event else event)
+        channel = _channel(event.get("channel_tag"))
         if "partial" in event:
             alternatives = event["partial"].get("alternatives", [])
             self.preview = alternatives[0].get("text", "") if alternatives else ""
@@ -50,7 +59,7 @@ class ResultAccumulator:
             alternatives = event["final"].get("alternatives", [])
             if alternatives:
                 index = int(event.get("audio_cursors", {}).get("final_index", 0))
-                channel = channel or str(event["final"].get("channel_tag") or "")
+                channel = channel or _channel(event["final"].get("channel_tag"))
                 key = (index, channel)
                 value = alternatives[0]
                 if key in self.finals and self.finals[key] != value:
@@ -59,7 +68,7 @@ class ResultAccumulator:
         if "final_refinement" in event:
             update = event["final_refinement"]
             normalized = update.get("normalized_text", {})
-            channel = channel or str(normalized.get("channel_tag") or "")
+            channel = channel or _channel(normalized.get("channel_tag"))
             alternatives = normalized.get("alternatives", [])
             if alternatives:
                 key = (int(update.get("final_index", 0)), channel)
@@ -136,3 +145,47 @@ class ResultAccumulator:
                 "timeline_offset_seconds": origin},
             "uncertainties": [{"kind": "literary-unfulfilled", "message": "requested refinement absent; raw text preserved"}] if missing else [],
         }
+
+def normalize_v2_result(operation, *, parameters, source_info=None):
+    """Adapt v2's operation-contained chunks without inventing speaker identity."""
+    response = operation.get("response")
+    if not isinstance(response, dict) or not isinstance(response.get("chunks", []), list):
+        raise SpeechError("PROVIDER", "completed v2 operation has no valid result response")
+
+    def milliseconds(value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.endswith("s"):
+            raise SpeechError("PROVIDER", "invalid v2 word duration")
+        try:
+            seconds = float(value[:-1])
+        except ValueError:
+            raise SpeechError("PROVIDER", "invalid v2 word duration") from None
+        if not math.isfinite(seconds) or seconds < 0:
+            raise SpeechError("PROVIDER", "invalid v2 word duration")
+        return seconds * 1000
+
+    accumulator = ResultAccumulator(literature_text=False, diarize=False,
+                                    timestamps=parameters["timestamps"])
+    for index, chunk in enumerate(response.get("chunks", [])):
+        if not isinstance(chunk, dict) or not isinstance(chunk.get("alternatives", []), list):
+            raise SpeechError("PROVIDER", "invalid v2 result chunk")
+        alternatives = chunk.get("alternatives", [])
+        if not alternatives:
+            continue
+        alternative = alternatives[0]
+        if not isinstance(alternative, dict) or not isinstance(alternative.get("words", []), list):
+            raise SpeechError("PROVIDER", "invalid v2 recognition alternative")
+        words = []
+        for word in alternative.get("words", []):
+            if not isinstance(word, dict):
+                raise SpeechError("PROVIDER", "invalid v2 word")
+            words.append({"text": word.get("word", ""), "start_time_ms": milliseconds(word.get("startTime")),
+                          "end_time_ms": milliseconds(word.get("endTime"))})
+        accumulator.feed({"audio_cursors": {"final_index": index},
+            "final": {"channel_tag": _channel(chunk.get("channelTag")),
+                      "alternatives": [{"text": alternative.get("text", ""), "words": words}]}})
+    result = accumulator.result(source_info=source_info)
+    result.update(api_version="2", transport="rest", raw=[copy.deepcopy(operation)])
+    result["metadata_availability"]["text_representation"] = "literary" if parameters["literature_text"] else "raw"
+    return result

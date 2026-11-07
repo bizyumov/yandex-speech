@@ -24,18 +24,20 @@ def check(*, _context=None, _environment=None, _probe=None):
     context = _context or RuntimeContext(user_home=Path(env.get("HOME") or Path.home()),
         workspace=Path(env["HERMES_HOME"]) if env.get("HERMES_HOME") else None)
     settings = resolve_settings(_context=context, _environment=env)
-    grpc = all(_available(m) for m in ["grpc", "grpc_tools", "yandex.cloud.ai.stt.v3.stt_pb2"])
+    grpc = all(_available(module) for module in (
+        "grpc", "yandex.cloud.ai.stt.v3.stt_pb2", "yandex.cloud.ai.stt.v3.stt_service_pb2_grpc",
+        "yandex.cloud.operation.operation_service_pb2_grpc"))
+    requests_available, storage_sdk = _available("requests"), _available("boto3")
     key_present = bool(env.get("YANDEX_SPEECH_API_KEY"))
     version = settings.value("api_version")
     version = "3" if version == "auto" else version
     selected_transport = settings.value("transport")
-    route_transport = ("grpc" if version == "3" else "rest") if selected_transport == "auto" else selected_transport
-    route_available = grpc if (version,route_transport) == ("3","grpc") else (
-        _available("requests") if (version,route_transport) == ("1","rest") else
-        _available("boto3") and bool(settings.value("object_storage.bucket"))
-        and bool(env.get("YANDEX_SPEECH_AWS_ACCESS_KEY_ID"))
-        and bool(env.get("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"))
-        if (version,route_transport) == ("2","rest") else False)
+    route_transport = ("grpc" if version == "3" and grpc else "rest") if selected_transport == "auto" else selected_transport
+    route_available = requests_available and (
+        grpc if (version, route_transport) == ("3", "grpc") else
+        route_transport == "rest" and version in {"1", "2", "3"})
+    storage_ready = storage_sdk and bool(settings.value("object_storage.bucket")) and bool(
+        env.get("YANDEX_SPEECH_AWS_ACCESS_KEY_ID")) and bool(env.get("YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"))
     report = {
         "authentication": {"status": "present-unverified" if key_present else "missing",
                            "credential": "YANDEX_SPEECH_API_KEY"},
@@ -52,16 +54,23 @@ def check(*, _context=None, _environment=None, _probe=None):
         "config_file": str(settings.path),
         "effective": settings.speech,
         "sources": settings.sources,
-        "dependencies": {"requests": _available("requests"), "grpc": grpc,
-                         "storage": _available("boto3"),
+        "dependencies": {"requests": requests_available, "grpc": grpc,
+                         "storage": storage_sdk,
                          "ffmpeg": bool(shutil.which("ffmpeg")),
                          "ffprobe": bool(shutil.which("ffprobe"))},
         "effective_route": {"api_version": version, "transport": route_transport,
-                            "available": bool(route_available)},
+                            "available": bool(route_available), "availability_kind": "local-only",
+                            "inputs": {"inline": bool(route_available and version in {"1", "3"}),
+                                       "caller_uri": bool(route_available and version in {"2", "3"}),
+                                       "helper_upload": bool(route_available and version in {"2", "3"} and storage_ready)},
+                            "streaming_available": bool(route_available and version == "3" and route_transport == "grpc"
+                                                        and not settings.value("enable_diarization"))},
         "options": [
-            {"route": "gRPC v3", "status": "implemented", "tradeoff": "Recorded and arriving audio; optional generated gRPC dependencies."},
-            {"route": "REST v1 direct/split, REST v2 + S3", "status": "legacy", "tradeoff": "Existing explicit entry points; no v3 timing/speaker or streaming equivalence."},
-            {"route": "gRPC v3 -> REST v3 + S3 -> ffmpeg split REST v1", "status": "Phase 2", "tradeoff": "Complete automatic fallback is not implemented in Phase 1."},
+            {"route": "gRPC v3", "status": "implemented", "tradeoff": "Recorded timing/speakers and bounded arriving audio; optional generated SDK."},
+            {"route": "REST v3 inline/URI", "status": "implemented", "tradeoff": "Recorded timing/speakers without generated SDK; inline JSON/base64 has a complete wire cap."},
+            {"route": "REST v2 + S3", "status": "implemented", "tradeoff": "Explicit versioned timing/recovery without native speaker labels; existing readable URI needs no upload SDK."},
+            {"route": "REST v1 direct/split", "status": "implemented", "tradeoff": "Explicit raw-text alternative without genuine word timing or speaker labels."},
+            {"route": "complete automatic fallback/partitioning", "status": "pending", "tradeoff": "Dependency-based gRPC/REST selection is implemented; automatic v1 fallback and over-limit partitioning remain unfinished."},
         ],
     }
     if _probe is not None and key_present:

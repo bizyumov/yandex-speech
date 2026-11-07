@@ -80,6 +80,7 @@ class YandexTranscriptionProvider(TranscriptionProvider):
                  _client_factory=SpeechTranscriber):
         self.workspace=Path(workspace)
         self.profile=dict(profile or {})
+        self._profile_secrets = _secret_resolver is None
         self._secret_resolver=_secret_resolver or self._scoped_secret
         self._client_factory=_client_factory
 
@@ -101,12 +102,17 @@ class YandexTranscriptionProvider(TranscriptionProvider):
                 adapter[target]=value
         if language:
             adapter["language_code"]=language
-        return self._client_factory(api_key=key,_context=RuntimeContext(workspace=self.workspace),
-                                    _adapter_defaults=adapter)
+        names = ("YANDEX_CLOUD_FOLDER_ID", "YANDEX_SPEECH_S3_BUCKET", "YANDEX_SPEECH_S3_ENDPOINT",
+                 "YANDEX_SPEECH_S3_PREFIX", "YANDEX_SPEECH_AWS_ACCESS_KEY_ID",
+                 "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY")
+        environment = ({name: value for name in names if (value := profile_secret(self.workspace, name))}
+                       if self._profile_secrets else {})
+        return self._client_factory(api_key=key, _context=RuntimeContext(workspace=self.workspace),
+                                    _adapter_defaults=adapter, _environment=environment)
 
     def is_available(self):
         try:
-            self._client()
+            self._client()._file_preflight()
             import requests
             return True
         except Exception:
@@ -134,25 +140,11 @@ class YandexTranscriptionProvider(TranscriptionProvider):
     def streaming_capable(self):
         return not self.streaming_unavailable_reason
 
-    def transcribe(self,file_path,*,model=None,language=None,**extra):
+    def transcribe(self, file_path, *, model=None, language=None, **extra):
         try:
-            if model not in {None,"general"}:
-                raise SpeechError("CONFIG","unsupported Yandex recognition model selection")
-            client=self._client(language)
-            if client.settings.value("transport") == "rest" or client.settings.value("api_version") in {"1","2"}:
-                if client.settings.value("api_version") == "2":
-                    result=client.transcribe_async_s3(file_path)
-                else:
-                    result=client._legacy_call("transcribe_auto",file_path)
-            else:
-                try:
-                    sdk()
-                except SpeechError:
-                    if client.settings.value("api_version") == "3":
-                        raise
-                    result=client._legacy_call("transcribe_auto",file_path)
-                else:
-                    result=client.transcribe_auto(file_path)
+            if model not in {None, "general"}:
+                raise SpeechError("CONFIG", "unsupported Yandex recognition model selection")
+            result = self._client(language).transcribe_auto(file_path)
             return _envelope(result)
         except Exception as error:
             return _failure(error)

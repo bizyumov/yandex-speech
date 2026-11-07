@@ -1,12 +1,10 @@
 """Optional generated SpeechKit v3 client; no gRPC imports on the base path."""
 from __future__ import annotations
 
-import hashlib
-import math
 import threading
-from urllib.parse import urlparse
 
 from .errors import SpeechError
+from .recording_request import file_source
 
 MAX_GRPC_BYTES = 60_000_000
 MAX_FILE_DURATION_MS = 14_400_000
@@ -51,56 +49,18 @@ def _model(p, container, rate, *, language, diarize, literature_text, streaming=
 def build_file_request(audio=None, *, language="ru-RU", diarize=False,
                        literature_text=True, uri=None, source_info=None):
     _, p, *_ = sdk()
-    if uri is None:
-        if audio is None:
-            raise SpeechError("CONFIG", "prepared audio is required")
-        duration, size, container, rate = (audio.duration_ms, audio.size_bytes,
-                                          audio.container, audio.sample_rate_hertz)
-        if size > MAX_GRPC_BYTES:
-            raise SpeechError("LIMIT", "prepared audio exceeds the v3 inline request budget; use a storage route")
-        with audio.path.open("rb") as stream:
-            content = stream.read(MAX_GRPC_BYTES + 1)
-        if len(content) > MAX_GRPC_BYTES:
-            raise SpeechError("LIMIT", "prepared audio grew beyond the inline request budget")
-        if not audio.source_info.get("converted") and audio.source_info.get("source_sha256"):
-            if hashlib.sha256(content).hexdigest() != audio.source_info["source_sha256"]:
-                raise SpeechError("STATE", "the addressed source changed during admission")
-        channels = audio.channels
-        source = {"content": content}
-    else:
-        try:
-            parsed = urlparse(str(uri))
-            port = parsed.port
-        except ValueError:
-            raise SpeechError("CONFIG", "invalid source object URI") from None
-        host = parsed.hostname or ""
-        if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.query
-                or parsed.fragment or port not in (None, 443)
-                or not (host == "storage.yandexcloud.net" or host.endswith(".storage.yandexcloud.net"))):
-            raise SpeechError("CONFIG", "use a supported non-secret Yandex Object Storage URI")
-        info = source_info or {}
-        if not isinstance(info,dict) or not isinstance(info.get("prepared"),dict):
-            raise SpeechError("CONFIG", "source object requires prepared-audio metadata")
-        prepared = info["prepared"]
-        duration, size = info.get("duration_ms"), info.get("size_bytes")
-        container, rate = prepared.get("container"), prepared.get("sample_rate_hertz")
-        channels = prepared.get("channels")
-        if type(size) is not int or not 0 <= size <= MAX_STORAGE_BYTES:
-            raise SpeechError("LIMIT", "source object size is missing or exceeds the storage budget")
-        source = {"uri": str(uri)}
-    if type(duration) not in (int, float) or not math.isfinite(duration) or not 0 <= duration <= MAX_FILE_DURATION_MS:
-        raise SpeechError("LIMIT", "prepared recording must fit the four-hour single-operation budget")
-    if (container not in {"LPCM","WAV","OGG_OPUS","MP3"} or type(rate) is not int or rate <= 0
-            or container in {"LPCM","WAV"} and rate not in {8000,16000,48000}):
-        raise SpeechError("CONFIG", "source metadata does not describe a supported prepared representation")
-    if type(channels) is not int or channels not in {1, 2}:
-        raise SpeechError("CONFIG", "source metadata must describe one or two audio channels")
-    model = _model(p, container, rate, language=language, diarize=diarize,
-                   literature_text=literature_text, channels=channels)
+    source, metadata = file_source(audio, uri=uri, source_info=source_info,
+        inline_limit=MAX_GRPC_BYTES, duration_limit=MAX_FILE_DURATION_MS,
+        storage_limit=MAX_STORAGE_BYTES, mono_required=diarize)
+    model = _model(p, metadata["container"], metadata["sample_rate_hertz"], language=language,
+                   diarize=diarize, literature_text=literature_text, channels=metadata["channels"])
     request = p.RecognizeFileRequest(**source, recognition_model=model,
-        speaker_labeling=p.SpeakerLabelingOptions(speaker_labeling=p.SpeakerLabelingOptions.SPEAKER_LABELING_ENABLED if diarize else p.SpeakerLabelingOptions.SPEAKER_LABELING_DISABLED))
+        speaker_labeling=p.SpeakerLabelingOptions(
+            speaker_labeling=p.SpeakerLabelingOptions.SPEAKER_LABELING_ENABLED if diarize else
+            p.SpeakerLabelingOptions.SPEAKER_LABELING_DISABLED))
     if uri is None and request.ByteSize() > MAX_GRPC_BYTES:
-        raise SpeechError("LIMIT", "serialized v3 protobuf exceeds 60,000,000 bytes including its envelope")
+        raise SpeechError("LIMIT", f"serialized v3 protobuf is {request.ByteSize()} bytes; "
+                          f"limit is {MAX_GRPC_BYTES} bytes including its envelope")
     return request
 
 

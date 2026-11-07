@@ -70,6 +70,59 @@ class HermesBindingTests(unittest.TestCase):
         self.assertFalse(provider.streaming_capable)
         self.assertIn("gRPC",provider.streaming_unavailable_reason)
 
+    def test_native_storage_defaults_and_separate_keys_use_only_own_profile_scope(self):
+        from integrations.hermes.provider import YandexTranscriptionProvider
+        own = {"YANDEX_SPEECH_API_KEY": "own-speech", "YANDEX_SPEECH_S3_BUCKET": "own-bucket",
+               "YANDEX_SPEECH_AWS_ACCESS_KEY_ID": "own-storage-id",
+               "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY": "own-storage-secret"}
+        foreign = {"YANDEX_SPEECH_S3_BUCKET": "foreign-bucket",
+                   "YANDEX_SPEECH_AWS_ACCESS_KEY_ID": "foreign-id",
+                   "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY": "foreign-secret"}
+        with patch.dict(os.environ, foreign):
+            with patch("integrations.hermes.provider.profile_secret", side_effect=lambda workspace, name: own.get(name)):
+                client = YandexTranscriptionProvider(self.home)._client()
+        self.assertEqual(client.api_key, "own-speech")
+        self.assertEqual(client.settings.value("object_storage.bucket"), "own-bucket")
+        self.assertEqual(client._environment["YANDEX_SPEECH_AWS_ACCESS_KEY_ID"], "own-storage-id")
+        self.assertNotIn("foreign-secret", json.dumps(client._environment))
+
+    def test_custom_speech_resolver_never_inherits_ambient_storage_defaults(self):
+        with patch.dict(os.environ, {"YANDEX_SPEECH_S3_BUCKET": "foreign-bucket",
+                                    "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY": "foreign-secret"}):
+            client = self.provider()._client()
+        self.assertIsNone(client.settings.value("object_storage.bucket"))
+        self.assertNotIn("foreign-secret", json.dumps(client._environment))
+
+    def test_native_explicit_rest_v3_file_uses_the_new_recording_core(self):
+        import wave
+        from tests.test_rest_stt import Response, Session
+        from tests.test_rest_recording import v3_wire
+        from yandex_speech.rest_stt import RestTransport
+        source = self.home / "source.wav"
+        with wave.open(str(source), "wb") as stream:
+            stream.setnchannels(1); stream.setsampwidth(2); stream.setframerate(16000)
+            stream.writeframes(bytes(32000))
+        session = Session(Response({"id": "native-rest"}), Response({"done": True}), Response(v3_wire()))
+        def factory(**options):
+            return SpeechTranscriber(**options, job_dir=self.home / "jobs",
+                _transport_factory=lambda version, transport: RestTransport("synthetic", _session=session))
+        provider = self.provider(profile={"transport": "rest", "api_version": "3"}, _client_factory=factory)
+        with patch("yandex_speech.transcription.grpc_sdk", side_effect=AssertionError("gRPC was used")):
+            result = provider.transcribe(source)
+        self.assertTrue(result["success"], result.get("error"))
+        self.assertEqual(result["speech_result"]["transport"], "rest")
+        self.assertEqual(result["transcript"], "Хвост.")
+
+    def test_native_file_availability_honors_strict_transport_and_version(self):
+        for version, transport, expected in (("3", "grpc", False), ("3", "rest", True),
+                                             ("auto", "auto", True), ("2", "grpc", False),
+                                             ("2", "rest", False), ("1", "grpc", False)):
+            with self.subTest(version=version, transport=transport):
+                provider = self.provider(profile={"api_version": version, "transport": transport})
+                with patch("yandex_speech.transcription.grpc_sdk",
+                           side_effect=SpeechError("PREREQUISITE", "missing optional SDK")):
+                    self.assertEqual(provider.is_available(), expected)
+
     def test_user_file_remains_above_profile_and_host_language_defaults(self):
         path=self.home/".config/yandex-speech/config.json"
         path.parent.mkdir(parents=True)

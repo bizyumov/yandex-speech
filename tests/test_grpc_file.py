@@ -111,6 +111,9 @@ class GrpcFileTests(unittest.TestCase):
                     self.assertEqual(audio.source_info["prepared"]["channels"], 2)
                     self.assertFalse(audio.source_info["converted"])
                     request = build_file_request(audio, diarize=False)
+                    with self.assertRaises(SpeechError) as mono_required:
+                        build_file_request(audio, diarize=True)
+                    self.assertEqual(mono_required.exception.category, "CONFIG")
                     self.assertEqual(request.content, original)
                     if container == "LPCM":
                         self.assertEqual(
@@ -120,6 +123,10 @@ class GrpcFileTests(unittest.TestCase):
                                      "sample_rate_hertz": 16000, "channels": 2}}
                 stored = build_file_request(
                     uri="https://storage.yandexcloud.net/synthetic/stereo", source_info=info)
+                with self.assertRaises(SpeechError) as mono_required:
+                    build_file_request(uri="https://storage.yandexcloud.net/synthetic/stereo",
+                                       source_info=info, diarize=True)
+                self.assertEqual(mono_required.exception.category, "CONFIG")
                 if container == "LPCM":
                     self.assertEqual(
                         stored.recognition_model.audio_format.raw_audio.audio_channel_count, 2)
@@ -216,7 +223,7 @@ class GrpcFileTests(unittest.TestCase):
         for version in ["1", "2"]:
             with self.subTest(version=version):
                 with self.assertRaises(SpeechError) as cm:
-                    self.client.start_transcription(self.path, api_version=version)
+                    self.client.start_transcription(self.path, api_version=version, transport="grpc")
                 self.assertEqual(cm.exception.category,"CONFIG")
         self.assertEqual(self.rpc.submissions, [])
         job = self.client.start_transcription(self.path)
@@ -229,19 +236,21 @@ class GrpcFileTests(unittest.TestCase):
         self.assertEqual(result["api_version"],"3")
         self.assertEqual(len(self.rpc.submissions),1)
 
-    def test_recovery_respects_selected_rest_refusal_and_explicit_grpc_override(self):
-        job=self.client.start_transcription(self.path)
-        path=self.root/".config/yandex-speech/config.json"
+    def test_recovery_respects_rest_policy_and_explicit_grpc_override(self):
+        job = self.client.start_transcription(self.path)
+        path = self.root / ".config/yandex-speech/config.json"
         path.parent.mkdir(parents=True)
         path.write_text('{"speech":{"transport":"rest"}}')
-        recovered=SpeechTranscriber(api_key="synthetic",_transport=self.rpc,
+        recovered = SpeechTranscriber(api_key="synthetic", _transport=self.rpc,
             _context=RuntimeContext(user_home=self.root))
-        with self.assertRaises(SpeechError) as cm:
-            recovered.poll_until_complete(job.manifest_path)
-        self.assertEqual(cm.exception.category,"CONFIG")
-        self.assertEqual(self.rpc.polls,[])
-        result=recovered.poll_until_complete(job.manifest_path,transport="grpc")
+        result = recovered.poll_until_complete(job.manifest_path)
+        self.assertEqual(result["transport"], "rest")
+        self.assertEqual(len(self.rpc.submissions), 1)
+        second = self.client.start_transcription(self.path, transport="grpc")
+        result = recovered.poll_until_complete(second.manifest_path, transport="grpc")
+        self.assertEqual(result["transport"], "grpc")
         self.assertTrue(result["input_complete"])
+        self.assertEqual(len(self.rpc.submissions), 2)
 
     def test_missing_provider_result_is_explicit_and_never_resubmitted(self):
         class MissingResult(grpc.RpcError):

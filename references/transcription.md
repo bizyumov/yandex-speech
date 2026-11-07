@@ -7,10 +7,10 @@
 | gRPC v3 RecognizeFile → operation polling → GetRecognition | Implemented; default recording route | Optional yandexcloud/grpcio/grpcio-tools, requests base, SpeechKit execution permission. Timing and native two-speaker mixed recording labels. Binary inline content or caller-provided supported storage URI. |
 | gRPC v3 RecognizeStreaming | Implemented for one bounded utterance | Recognition while audio arrives; ordered prepared PCM, previews, external EOU, complete response drain. No mixed-recording diarization/subtitle output. |
 | REST v1 direct / overlapped split | Implemented explicit text-only entries | No gRPC/S3. Sample-exact windows up to 30 seconds, five-second overlap and 25-second stride. Raw output has no genuine word timing/speaker labels or literary-style guarantee. |
-| REST v2 async-s3 | Preserved explicit compatibility | requests+boto3 and authorized object access. Existing v2 response handling, not v3 streaming/results. New durable recovery/storage helpers are Phase 2. |
-| REST v3 + S3 or eligible inline; complete fallback chain | Phase 2 | Whole-file v3 metadata without optional gRPC dependencies; upload/polling/access setup. |
+| REST v2 async-s3 / explicit API v2 | Implemented compatibility with durable recovery | Version-specific operation-contained chunks and genuine timing; no native speaker labeling. Readable source URI needs no boto3; helper uploads use separate storage access. |
+| REST v3 + S3 or eligible inline | Implemented; auto selects it when gRPC dependencies are absent | Whole-file timing/labeling without generated SDK dependencies. Readable URI use needs no upload SDK. Inline JSON includes base64 overhead; uploads need an existing authorized bucket and separate credentials. |
 
-The full intended chain is gRPC v3 → REST v3 + S3 → FFmpeg split + REST v1. Phase 1 never claims that automatic chain is complete. Fixed API versions and grpc/rest selections are strict. Default literary true/required speaker or timing output cannot silently become unformatted v1 text. An explicitly selected direct/v1 route reports the unavailable literary representation.
+The full intended chain is gRPC v3 → REST v3 + S3 → FFmpeg split + REST v1. Dependency-based gRPC/REST selection is implemented; automatic v1 fallback and over-limit partitioning remain unfinished. Fixed API versions and grpc/rest selections are strict. Default literary true/required speaker or timing output cannot silently become unformatted v1 text. An explicitly selected direct/v1 route reports the unavailable literary representation.
 
 Exact project admission limits are applied to prepared audio, not its original container or suffix:
 
@@ -18,10 +18,21 @@ Exact project admission limits are applied to prepared audio, not its original c
 |---|---|
 | REST v1 direct | Mono LPCM/Ogg, duration ≤30,000 ms; audio body **<1,000,000 bytes**. A 30-second 16 kHz mono s16le body is 960,000 bytes. WAV headers are removed for raw LPCM. |
 | gRPC v3 inline | Duration ≤14,400,000 ms; complete serialized protobuf including envelope ≤60,000,000 bytes; finite 64 MiB client message limits. |
-| gRPC v3 caller-supplied storage URI | Prepared object ≤1,000,000,000 bytes and ≤14,400,000 ms; compatible source_info required. Only provider-supported HTTPS Object Storage URIs, with no embedded credentials/query. |
+| REST v3 inline | Duration ≤14,400,000 ms; the complete UTF-8 JSON body, including base64 and metadata, is ≤60,000,000 bytes. Its effective audio capacity is below 45,000,000 bytes. |
+| v3/v2 storage URI | Prepared object ≤1,000,000,000 bytes and ≤14,400,000 ms; compatible source_info required. Only provider-supported HTTPS Object Storage URIs, with no embedded credentials/query. |
 | Arriving recognition | Native 16 kHz mono s16le PCM; ≤240 s / 7,680,000 bytes per utterance. Source queue ≤1,048,576 bytes; prepared queue ≤64,000 bytes; two local speech operations and one inline submission at a time. Finalization ≤5 s; accepted cancellation cleanup ≤2 s. |
 
 [Provider limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits) · [Formats](https://aistudio.yandex.ru/en/docs/speechkit/formats) · [v3 recorded API](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/grpc/AsyncRecognizer/recognizeFile).
+
+### REST recordings and versioned recovery
+
+Use `--mode async --transport rest --api-version 3` for REST v3. Small prepared sources use inline content; `--bucket EXISTING_PRIVATE_BUCKET` uploads to that existing authorized bucket. A configured storage bucket is also honored. The helper records ownership, retains sources by default and does not arrange recognizer read access implicitly. In Python, `use_storage=False` explicitly selects inline content even when a bucket is configured.
+
+Use `--mode async --transport rest --api-version 2 --bucket EXISTING_PRIVATE_BUCKET` or the preserved `--mode async-s3` alias for explicit v2. Preparation preserves native MP3/Ogg where compatible and converts WAV to headerless PCM before v2 upload. The original source and its identity stay intact. v2 results have genuine word times and channel metadata; channels are not invented speaker identities.
+
+Both versions save durable jobs. Recover with `--resume SAVED.job.json --transport rest`, or `--operation-id ID --api-version 2|3 --transport rest`. The saved version and parameters override current submission defaults; an explicit conflicting recovery version fails before any request. REST can retrieve a gRPC-submitted v3 operation without submitting its source again. The job records its original submission transport, while the result names the actual retrieval transport. A verified cached result needs neither source media nor a provider call.
+
+An accepted or uncertain operation never falls through to a new paid submission. Failed new submissions expose their exact private receipt through `SpeechError.receipt_path` and CLI stderr. Read-only polling/result retries are bounded. REST gateway events retain their original JSON and genuine timing; truncated, malformed or metadata-only streams do not become successful empty transcripts. Missing required word times or speaker labels fails the operation instead of silently dropping that requirement. [v3 submission](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/AsyncRecognizer/recognizeFile) · [v3 results](https://aistudio.yandex.ru/en/docs/speechkit/stt-v3/api-ref/AsyncRecognizer/getRecognition) · [v2 schema](https://aistudio.yandex.ru/en/docs/speechkit/stt/api/transcribation-api).
 
 ## Recorded split recognition
 
@@ -66,7 +77,7 @@ Default file: $HOME/.config/yandex-speech/config.json; active Hermes workspace r
 }
 ```
 
-Explicit call/CLI → selected user file → native adapter defaults → legacy environment aliases → built-ins. Explicit false remains explicit. Credentials never belong in this JSON. Enable-profanity=true is rejected. HERMES_TTS_VOICE/HERMES_TTS_LANG and existing S3 aliases stay below the user file. `auto` resolves per operation: new recording/arrival v3 over gRPC in Phase 1; existing ordinary synthesis REST v1. Diagnostics report actual effective values/sources and unavailable later routes.
+Explicit call/CLI → selected user file → native adapter defaults → legacy environment aliases → built-ins. Explicit false remains explicit. Credentials never belong in this JSON. Enable-profanity=true is rejected. HERMES_TTS_VOICE/HERMES_TTS_LANG and existing S3 aliases stay below the user file. `auto` resolves per operation: recorded v3 prefers gRPC and uses REST when optional gRPC dependencies are absent; arriving v3 requires gRPC; ordinary synthesis uses REST v1. Diagnostics distinguish local eligibility from verified provider access.
 
 ## Results and state
 
@@ -85,9 +96,9 @@ job = transcriber.start_transcription(upload, timestamps=True)
 result = transcriber.poll_until_complete(job)
 ```
 
-Bucket/endpoint/prefix resolve explicit constructor values → workspace user file → adapter defaults → existing S3 environment aliases → built-ins. Static credentials resolve separately and never enter configuration JSON, ownership records or command arguments. New private receipt directories/files use 0700/0600; existing caller directory modes are preserved.
+Bucket/endpoint/prefix resolve explicit constructor values → workspace user file → adapter defaults → existing S3 environment aliases → built-ins. Static credentials resolve separately and never enter configuration JSON, ownership records or command arguments. For a source intended for v2, use `uploader.upload(path, api_version="2")`; WAV preparation removes its header while preserving original identity and timing. New private receipt directories/files use 0700/0600; existing caller directory modes are preserved.
 
-Each upload records its intent durably before a conditional create-only PUT, under an opaque UUID key. The request includes content integrity and ownership metadata. Existing objects are preserved even on collision; no bucket creation, public ACL, prefix sweep or implicit role change occurs. The receipt retains original identity, actual prepared representation/size/hash and the immutable object version when available. Source channels above the backend capacity are downmixed automatically. A single upload must fit the selected four-hour/1 GB object method; over-limit partitioning is a separate recording operation.
+Each upload records its intent durably before a conditional create-only PUT, under an opaque UUID key. The request includes content integrity and ownership metadata. Existing objects are preserved even on collision; no bucket creation, public ACL, prefix sweep or implicit role change occurs. The receipt retains original identity, actual prepared representation/size/hash and the immutable object version when available. Source channels above the backend capacity are downmixed automatically. For native speaker labeling, local recording calls prepare mono; independent helper uploads must select `diarize=True` before upload. A stereo caller URI cannot be relabeled as mono and is refused for labeling before submission. Ordinary stereo recording admission is preserved. [Labeling requirements](https://aistudio.yandex.ru/en/docs/speechkit/stt/speaker-labeling). A single upload must fit the selected four-hour/1 GB object method; over-limit partitioning is a separate recording operation.
 
 The upload principal's write access does not establish the recognizer's private read access. The resource owner must arrange that selected recognition account's read permission on the source. Keep the source private. Passing the `UploadReceipt` directly to recognition retains its ownership reference without another upload. Passing only its URI with `source_info=upload.source_info` instead treats it as caller-supplied and does not acquire cleanup ownership.
 
@@ -97,9 +108,9 @@ Explicit `uploader.cleanup(upload, job)` requires the matching completed job, it
 
 Use `from yandex_speech import SpeechTranscriber, AudioInputSpec, SpeechError`. `start_transcription(path, diarize=True, timestamps=True)` returns a private JobHandle; `poll_until_complete(job)` or a saved receipt Path retrieves the accepted job. `get_result` uses the same recovery operation. No uncertain RecognizeFile submission is automatically retried. Transient operation/result calls have at most three attempts and a whole deadline (default 1,800 seconds); polling does not invent a new job.
 
-Python state uses explicit job_dir or XDG_STATE_HOME/yandex-speech/jobs, falling back to ~/.local/state/yandex-speech/jobs. Hermes scopes state under its workspace. The CLI writes `<output-stem>.job.json` (or --job-file PATH) as a private pointer to the complete UUID-scoped receipt. Resume accepts either that pointer or the canonical receipt. Retain both pointer and state until no longer needed. Bare --operation-id requires explicit version 3 in Phase 1; v2 recovery is Phase 2.
+Python state uses explicit job_dir or XDG_STATE_HOME/yandex-speech/jobs, falling back to ~/.local/state/yandex-speech/jobs. Hermes scopes state under its workspace. The CLI writes `<output-stem>.job.json` (or --job-file PATH) as a private pointer to the complete UUID-scoped receipt. Resume accepts either that pointer or the canonical receipt. Retain both pointer and state until no longer needed. Bare --operation-id requires its explicit API version 2 or 3.
 
-Result schema 1 contains text, ordered segments/words, raw provider events, source identity/conversion provenance, actual api_version/transport, metadata_availability, uncertainties, input_complete and completion_kind. Only successful whole-input drain is complete. No-speech is a successful complete take with empty text, not a transport error. Missing timing/speakers stay null. Speaker tags are anonymous and request-local; native labeling has a platform limit of two speakers.
+Result schema 1 contains text, ordered segments/words, raw provider events, source identity/conversion provenance, actual api_version/transport, metadata_availability, uncertainties, input_complete and completion_kind. Only successful whole-input drain is complete. No-speech is a successful complete take with empty text, not a transport error. Missing optional timing/speakers stay null; a required unavailable feature fails. Speaker tags are anonymous and request-local; native labeling has a platform limit of two speakers.
 
 Literary true explicitly enables provider normalization/capitalization/punctuation, with profanity masking and phone formatting off. Correlate final_refinement by final index/channel, preserve raw finals and do not duplicate words. Missing refinement is reported raw-unfulfilled, never silently called literary. False selects raw finals and disables normalization. [Normalization](https://aistudio.yandex.ru/en/docs/speechkit/stt/normalization).
 
