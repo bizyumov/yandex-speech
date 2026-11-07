@@ -70,6 +70,31 @@ Explicit call/CLI → selected user file → native adapter defaults → legacy 
 
 ## Results and state
 
+### Explicit owned Object Storage uploads
+
+The public `ObjectStorageUploader` prepares a decodable local recording and returns an `UploadReceipt`. This explicit helper is available independently of the later automatic recording fallback chain. It requires an existing authorized private bucket and, for its default client, the optional boto3 dependency plus separate `YANDEX_SPEECH_AWS_ACCESS_KEY_ID` / `YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY`. A SpeechKit API key is not a storage access key. Missing storage credentials do not affect an eligible inline request; nothing is installed or provisioned automatically.
+
+```python
+from pathlib import Path
+from yandex_speech import ObjectStorageUploader, SpeechTranscriber
+
+uploader = ObjectStorageUploader(bucket="existing-private-bucket")
+upload = uploader.upload(Path("meeting.mp3"))
+transcriber = SpeechTranscriber()
+job = transcriber.start_transcription(upload, timestamps=True)
+result = transcriber.poll_until_complete(job)
+```
+
+Bucket/endpoint/prefix resolve explicit constructor values → workspace user file → adapter defaults → existing S3 environment aliases → built-ins. Static credentials resolve separately and never enter configuration JSON, ownership records or command arguments. New private receipt directories/files use 0700/0600; existing caller directory modes are preserved.
+
+Each upload records its intent durably before a conditional create-only PUT, under an opaque UUID key. The request includes content integrity and ownership metadata. Existing objects are preserved even on collision; no bucket creation, public ACL, prefix sweep or implicit role change occurs. The receipt retains original identity, actual prepared representation/size/hash and the immutable object version when available. Source channels above the backend capacity are downmixed automatically. A single upload must fit the selected four-hour/1 GB object method; over-limit partitioning is a separate recording operation.
+
+The upload principal's write access does not establish the recognizer's private read access. The resource owner must arrange that selected recognition account's read permission on the source. Keep the source private. Passing the `UploadReceipt` directly to recognition retains its ownership reference without another upload. Passing only its URI with `source_info=upload.source_info` instead treats it as caller-supplied and does not acquire cleanup ownership.
+
+Uploads are retained by default. After an uncertain PUT response, use `uploader.recover_upload(upload_record_path)` to inspect matching remote owner/hash/size metadata; it does not repeat the upload. A forbidden metadata lookup stays denied/not verifiable, rather than being called a missing object or grant. The default SDK client disables automatic mutation retries.
+
+Explicit `uploader.cleanup(upload, job)` requires the matching completed job, its verified durable canonical result and the private upload record. It deletes only the exact immutable version recorded by that upload, preserving a newer unrelated version. The provider's documented DeleteObject surface has no atomic ETag-delete condition, so an unversioned or null-version object stays retained with an actionable prerequisite; the helper does not enable bucket versioning or bypass retention controls. A lost delete response is resolved by inspecting that same immutable version. [Conditional PUT](https://yandex.cloud/en/docs/storage/s3/api-ref/object/upload) · [Version-specific deletion](https://yandex.cloud/en/docs/storage/s3/api-ref/object/delete).
+
 Use `from yandex_speech import SpeechTranscriber, AudioInputSpec, SpeechError`. `start_transcription(path, diarize=True, timestamps=True)` returns a private JobHandle; `poll_until_complete(job)` or a saved receipt Path retrieves the accepted job. `get_result` uses the same recovery operation. No uncertain RecognizeFile submission is automatically retried. Transient operation/result calls have at most three attempts and a whole deadline (default 1,800 seconds); polling does not invent a new job.
 
 Python state uses explicit job_dir or XDG_STATE_HOME/yandex-speech/jobs, falling back to ~/.local/state/yandex-speech/jobs. Hermes scopes state under its workspace. The CLI writes `<output-stem>.job.json` (or --job-file PATH) as a private pointer to the complete UUID-scoped receipt. Resume accepts either that pointer or the canonical receipt. Retain both pointer and state until no longer needed. Bare --operation-id requires explicit version 3 in Phase 1; v2 recovery is Phase 2.

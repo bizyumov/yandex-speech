@@ -7,7 +7,9 @@ try:
 except PackageNotFoundError:
     __version__ = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
 
-__all__ = ["SpeechTranscriber", "TextToSpeech", "AudioInputSpec", "SpeechError", "__version__"]
+__all__ = ["SpeechTranscriber", "TextToSpeech", "ObjectStorageUploader", "UploadReceipt", "AudioInputSpec", "SpeechError", "__version__"]
+
+
 
 
 def __getattr__(name):
@@ -17,6 +19,9 @@ def __getattr__(name):
     if name == "TextToSpeech":
         from scripts.tts import TextToSpeech
         return TextToSpeech
+    if name in {"ObjectStorageUploader", "UploadReceipt"}:
+        from .storage import ObjectStorageUploader, UploadReceipt
+        return {"ObjectStorageUploader": ObjectStorageUploader, "UploadReceipt": UploadReceipt}[name]
     if name == "AudioInputSpec":
         from .media import AudioInputSpec
         return AudioInputSpec

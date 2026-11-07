@@ -159,6 +159,8 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
     elif original["codec"] == "mp3" and "mp3" in original["format"].split(","):
         container = "MP3"
     remaining()
+    if channels > 2:
+        container = None  # Preserve source admission; adapt above the backend channel capacity.
     if container and (original["track"] != 0 or original.get("audio_stream_count", 1) > 1):
         # A native container can still need stream extraction, without PCM expansion.
         with tempfile.TemporaryDirectory(prefix="yandex-speech-audio-") as directory:
