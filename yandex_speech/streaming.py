@@ -340,21 +340,26 @@ class TranscriptionSession:
             self.transport.close()
         except Exception:
             close_error = SpeechError("STATE", "owned transport did not close successfully")
-        with self._state_lock:
-            workers = list(self.workers)
-        for worker in workers:
-            if worker is not threading.current_thread():
+        while True:
+            with self._state_lock:
+                workers = [worker for worker in self.workers
+                           if worker is not threading.current_thread() and worker.is_alive()]
+                if not workers:
+                    if process is not None and process.poll() is None:
+                        raise SpeechError("STATE", "owned stream workers exceeded the two-second shutdown budget")
+                    if close_error is not None:
+                        raise close_error
+                    # Close admission under the same lock used by _thread. A concurrent
+                    # finalizer may register its failure cleanup after an earlier snapshot.
+                    if not self._closed:
+                        self._closed = True
+                        if self._on_close is not None:
+                            self._on_close()
+                    return
+            if time.monotonic() >= deadline:
+                raise SpeechError("STATE", "owned stream workers exceeded the two-second shutdown budget")
+            for worker in workers:
                 worker.join(timeout=max(0.0, deadline - time.monotonic()))
-        if ((process is not None and process.poll() is None)
-                or any(t.is_alive() for t in self.workers if t is not threading.current_thread())):
-            raise SpeechError("STATE", "owned stream workers exceeded the two-second shutdown budget")
-        if close_error is not None:
-            raise close_error
-        with self._state_lock:
-            if not self._closed:
-                self._closed = True
-                if self._on_close is not None:
-                    self._on_close()
 
     def _source_info(self):
         return {"metadata_origin": "streamed_input", "source_sha256": self._source_hash.hexdigest(),

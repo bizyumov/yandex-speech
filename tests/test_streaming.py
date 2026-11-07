@@ -209,6 +209,70 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(errors, ["CANCELLED"])
         self.assertFalse(any(worker.is_alive() for worker in stream.workers))
 
+    def test_cancel_joins_failure_cleanup_registered_during_worker_shutdown(self):
+        stream, _ = self.session()
+        first_release, cleanup_release = threading.Event(), threading.Event()
+        cleanup_entered = threading.Event()
+        original_cleanup = stream._cleanup_failure
+
+        def delayed_cleanup():
+            cleanup_entered.set()
+            self.assertTrue(cleanup_release.wait(5))
+            original_cleanup()
+
+        stream._cleanup_failure = delayed_cleanup
+        stream._thread(lambda: first_release.wait(5), "test-owned-worker")
+        first = stream.workers[0]
+        original_join = first.join
+        injected = False
+
+        def join_first(timeout=None):
+            nonlocal injected
+            if not injected:
+                injected = True
+                # Finalize can report CANCELLED after cancel took its worker snapshot.
+                stream._fail(SpeechError("CANCELLED", "synthetic concurrent finalizer"))
+                self.assertTrue(cleanup_entered.wait(2))
+                late = stream.workers[-1]
+                late_join = late.join
+
+                def join_late(timeout=None):
+                    cleanup_release.set()
+                    return late_join(timeout)
+
+                late.join = join_late
+                first_release.set()
+            return original_join(timeout)
+
+        first.join = join_first
+        try:
+            stream.cancel()
+            self.assertTrue(injected)
+            self.assertFalse(any(worker.is_alive() for worker in stream.workers))
+        finally:
+            first_release.set()
+            cleanup_release.set()
+            for worker in stream.workers:
+                worker.join(2)
+
+    def test_cleanup_budget_still_reports_a_live_worker_and_notifies_close_once(self):
+        notifications = []
+        stream, _ = self.session(_on_close=lambda: notifications.append("closed"))
+        release = threading.Event()
+        stream._thread(lambda: release.wait(5), "test-budget-worker")
+        try:
+            with self.assertRaises(SpeechError) as raised:
+                stream._cleanup(time.monotonic())
+            self.assertEqual(raised.exception.category, "STATE")
+            self.assertEqual(notifications, [])
+        finally:
+            release.set()
+            for worker in stream.workers:
+                worker.join(2)
+        stream.cancel()
+        stream.cancel()
+        self.assertEqual(notifications, ["closed"])
+
     def test_utterance_limit_cancels_instead_of_dropping_audio(self):
         stream, rpc = self.session(_max_pcm_bytes=3200)
         with self.assertRaises(SpeechError) as cm:
