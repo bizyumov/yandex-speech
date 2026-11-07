@@ -70,7 +70,8 @@ def check(*, _context=None, _environment=None, _probe=None):
             {"route": "REST v3 inline/URI", "status": "implemented", "tradeoff": "Recorded timing/speakers without generated SDK; inline JSON/base64 has a complete wire cap."},
             {"route": "REST v2 + S3", "status": "implemented", "tradeoff": "Explicit versioned timing/recovery without native speaker labels; existing readable URI needs no upload SDK."},
             {"route": "REST v1 direct/split", "status": "implemented", "tradeoff": "Explicit raw-text alternative without genuine word timing or speaker labels."},
-            {"route": "complete automatic fallback/partitioning", "status": "pending", "tradeoff": "Dependency-based gRPC/REST selection is implemented; automatic v1 fallback and over-limit partitioning remain unfinished."},
+            {"route": "automatic recording fallback", "status": "implemented", "tradeoff": "Local-only gRPC/REST changes and eligible raw-text v1 windows; accepted/uncertain work is never resubmitted."},
+            {"route": "over-limit async partitioning", "status": "pending", "tradeoff": "Oversized async sources still require explicit compatible recovery; no cross-job speaker identity is promised."},
         ],
     }
     if _probe is not None and key_present:

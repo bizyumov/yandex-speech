@@ -73,6 +73,7 @@ def _resume_path(path):
 def transcribe_main(argv=None):
     parser=build_parser()
     args=parser.parse_args(argv)
+    explicit_job_file = args.job_file is not None
     if sum(value is not None for value in [args.input,args.resume,args.operation_id]) != 1:
         parser.error("provide exactly one audio input, --resume or --operation-id")
     if args.stream and (args.input != "-" or args.mode is not None):
@@ -151,14 +152,32 @@ def transcribe_main(argv=None):
                 **({"bucket":args.bucket} if args.bucket is not None else {}),**options)
         else:
             descriptor=AudioInputSpec(args.audio_format,args.sample_format,args.sample_rate,args.channels)
-            job=client.start_transcription(Path(args.input),audio_input=descriptor,
-                audio_track=args.audio_track,bucket=args.bucket,
-                deadline_seconds=args.deadline_seconds,**options)
-            if args.job_file:
-                atomic_write(args.job_file,json.dumps({"kind":"yandex-speech-job-pointer",
-                    "manifest_path":str(job.manifest_path)}).encode())
-            print(f"Recovery receipt: {job.manifest_path}",file=sys.stderr)
-            result=client.poll_until_complete(job)
+            published = None
+            def prepared(job):
+                if args.job_file:
+                    _preflight_output(args.job_file, False)
+            def accepted(job):
+                nonlocal published
+                manifest = str(getattr(job, "manifest_path", job))
+                if published is not None:
+                    if published != manifest:
+                        raise SpeechError("STATE", "more than one accepted job cannot share this recovery pointer")
+                    return
+                if args.job_file:
+                    atomic_write(args.job_file, json.dumps({"kind": "yandex-speech-job-pointer",
+                        "manifest_path": manifest}).encode())
+                published = manifest
+                print(f"Recovery receipt: {manifest}", file=sys.stderr)
+            recording = dict(audio_input=descriptor, audio_track=args.audio_track, bucket=args.bucket,
+                deadline_seconds=args.deadline_seconds, _on_prepared=prepared, _on_accepted=accepted, **options)
+            if args.mode in {None, "auto"}:
+                result = client.transcribe_auto(Path(args.input), _require_job=explicit_job_file, **recording)
+            else:
+                job = client.start_transcription(Path(args.input), **recording)
+                accepted(job)
+                result = client.poll_until_complete(job)
+            if result.get("job_manifest_path") and published is None:
+                accepted(result["job_manifest_path"])
         if not result.get("input_complete"):
             raise SpeechError("OUTPUT_PARTIAL","incomplete input cannot be published as a transcript")
         overlap_notes = [note for note in result.get("uncertainties", [])

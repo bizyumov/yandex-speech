@@ -123,6 +123,13 @@ class HermesBindingTests(unittest.TestCase):
                            side_effect=SpeechError("PREREQUISITE", "missing optional SDK")):
                     self.assertEqual(provider.is_available(), expected)
 
+    def test_preferred_storage_without_keys_preserves_native_inline_file_availability(self):
+        config = self.home / ".config/yandex-speech/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"speech":{"transport":"rest","object_storage":{"bucket":"preferred-private"}}}')
+        self.assertTrue(self.provider().is_available())
+        self.assertFalse(self.provider().streaming_capable)
+
     def test_user_file_remains_above_profile_and_host_language_defaults(self):
         path=self.home/".config/yandex-speech/config.json"
         path.parent.mkdir(parents=True)

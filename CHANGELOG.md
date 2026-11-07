@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Route recorded auto requests through capability-compatible gRPC/REST/raw-text fallback, retain pre-acceptance reasons, stop after accepted/uncertain work, and keep CLI recovery pointers specific to actual asynchronous jobs.
+
 - Add SDK-independent REST v3 recording recognition, explicit durable v2/S3, version-preserving recovery across gRPC/REST, exact JSON-wire admission and genuine metadata enforcement; prepare WAV as headerless PCM for v2 and scope native storage credentials to the owning Hermes profile.
 
 - Add public owned-upload receipts, conditional no-clobber S3 creation, metadata-based uncertain-upload recovery and explicit exact-version cleanup after durable recognition; retain unversioned sources safely.
