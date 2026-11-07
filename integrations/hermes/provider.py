@@ -1,4 +1,6 @@
-"""Adapt the core completion contract to Hermes's nonraising STT envelopes."""
+"""Expose live failures and preserve Hermes's nonraising completion envelopes."""
+import logging
+import threading
 from pathlib import Path
 
 from agent.transcription_provider import TranscriptionProvider, TranscriptionStreamSession
@@ -7,6 +9,8 @@ from yandex_speech.errors import SpeechError
 from yandex_speech.grpc_stt import sdk
 from yandex_speech.media import AudioInputSpec
 from yandex_speech.transcription import SpeechTranscriber
+
+logger = logging.getLogger(__name__)
 
 
 def profile_secret(workspace, name):
@@ -33,44 +37,144 @@ def _failure(error):
 
 
 class YandexStreamSession(TranscriptionStreamSession):
-    def __init__(self,core):
-        self.core=core
-        self._error=None
-        self._result=None
+    def __init__(self, core):
+        self.core = core
+        self._error = None
+        self._result = None
+        self._failure_phase = None
+        self._cleanup_failed = False
+        self._cleanup_inflight = 0
+        self._finalizing = False
+        self._state_lock = threading.RLock()
+        self._finalize_lock = threading.Lock()
+
+    def _refresh_cached_failure(self):
+        if self._result is None or self._result.get("success"):
+            return
+        self._sync_core_failure()
+        self._result["error"] = str(self._error)
+        metadata = self._result.setdefault("stream_failure", {})
+        metadata.update({
+            "phase": self._failure_phase, "category": self._error.category,
+            "code": self._error.code,
+            "cleanup_failed": self._cleanup_failed or getattr(self.core, "cleanup_failed", False) is True,
+            "cleanup_pending": self._cleanup_inflight > 0 or getattr(self.core, "cleanup_pending", False) is True,
+        })
 
     def _abort(self):
+        with self._state_lock:
+            self._cleanup_inflight += 1
+            self._refresh_cached_failure()
         try:
             self.core.cancel()
         except Exception:
-            self._error=SpeechError("STATE","owned stream cleanup failed")
+            with self._state_lock:
+                self._cleanup_failed = True
+                if self._error is None:
+                    self._error = SpeechError("STATE", "owned stream cleanup failed")
+                    self._failure_phase = "cleanup"
+        finally:
+            with self._state_lock:
+                self._cleanup_inflight -= 1
+                self._refresh_cached_failure()
 
-    def push_audio(self,chunk):
-        if self._error is not None:
-            return
+    def _remember_failure(self, error, phase):
+        core_failure = getattr(self.core, "failure", None)
+        failure = core_failure if isinstance(core_failure, SpeechError) else error
+        failure = failure if isinstance(failure, SpeechError) else SpeechError(
+            "PROVIDER", "Yandex speech operation failed")
+        with self._state_lock:
+            first = self._error is None
+            if first:
+                self._error = failure
+                self._failure_phase = phase
+            original = self._error
+        if first:
+            logger.warning("Native Yandex stream failed: phase=%s category=%s code=%s",
+                           phase, original.category, original.code)
+        self._abort()
+        return original
+
+    def push_audio(self, chunk):
+        with self._state_lock:
+            if self._error is not None:
+                raise self._error
+            if self._finalizing or self._result is not None:
+                raise SpeechError("STATE", "cannot feed a finalized native session")
         try:
             self.core.push_audio(chunk)
         except Exception as error:
-            self._error=error
-            self._abort()
+            raise self._remember_failure(error, "push") from None
+        with self._state_lock:
+            if self._error is not None:
+                raise self._error
 
     def partial_transcript(self):
-        return "" if self._error is not None else self.core.partial_transcript()
+        with self._state_lock:
+            if self._error is not None:
+                raise self._error
+            if self._result is not None:
+                return ""
+        try:
+            preview = self.core.partial_transcript()
+        except Exception as error:
+            raise self._remember_failure(error, "preview") from None
+        with self._state_lock:
+            if self._error is not None:
+                raise self._error
+        return preview
 
     def finalize(self):
-        if self._result is None:
-            try:
+        with self._finalize_lock:
+            with self._state_lock:
+                if self._result is not None:
+                    self._refresh_cached_failure()
+                    return self._result
+                self._finalizing = True
+                failed = self._error is not None
+            candidate = None
+            if not failed:
+                try:
+                    candidate = _envelope(self.core.finalize())
+                    if not candidate["success"]:
+                        self._remember_failure(SpeechError(
+                            "OUTPUT_PARTIAL", "complete addressed input is required"), "finalize")
+                except Exception as error:
+                    self._remember_failure(error, "finalize")
+            with self._state_lock:
+                self._sync_core_failure()
                 if self._error is not None:
-                    self._result=_failure(self._error)
-                else:
-                    self._result=_envelope(self.core.finalize())
-            except Exception as error:
-                self._result=_failure(error)
-                self._abort()
-        return self._result
+                    candidate = _failure(self._error)
+                self._result = candidate
+                self._refresh_cached_failure()
+                self._finalizing = False
+                return self._result
+
+    def _sync_core_failure(self):
+        failure = getattr(self.core, "failure", None)
+        if isinstance(failure, SpeechError) and (
+                self._error is None or
+                self._error.category == "CANCELLED" and failure.category != "CANCELLED"):
+            self._error = failure
+            self._failure_phase = "core"
+            return True
+        return False
 
     def cancel(self):
+        with self._state_lock:
+            if self._result is not None:
+                return
+            adopted = self._sync_core_failure()
+            if self._error is None:
+                self._error = SpeechError("CANCELLED", "local host utterance cancelled")
+                self._failure_phase = "cancel"
+            failure = self._error
+        if adopted:
+            logger.warning("Native Yandex stream failed: phase=core category=%s code=%s",
+                           failure.category, failure.code)
         self._abort()
-        self._error=SpeechError("CANCELLED","local host utterance cancelled")
+        with self._state_lock:
+            self._sync_core_failure()
 
 
 class YandexTranscriptionProvider(TranscriptionProvider):

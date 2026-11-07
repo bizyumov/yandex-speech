@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Surface native streaming failures during audio feeding or preview; preserve the first safe cause through cleanup/cancellation, keep finalization nonraising and prevent cancellation races from committing success.
+
 - Route recorded auto requests through capability-compatible gRPC/REST/raw-text fallback, retain pre-acceptance reasons, stop after accepted/uncertain work, and keep CLI recovery pointers specific to actual asynchronous jobs.
 
 - Add SDK-independent REST v3 recording recognition, explicit durable v2/S3, version-preserving recovery across gRPC/REST, exact JSON-wire admission and genuine metadata enforcement; prepare WAV as headerless PCM for v2 and scope native storage credentials to the owning Hermes profile.
