@@ -132,6 +132,11 @@ class SpeechTranscriber:
                       "diarize": settings.value("enable_diarization"),
                       "timestamps": settings.value("enable_timestamps"),
                       "literature_text": settings.value("literature_text")}
+            from .storage import UploadReceipt
+            if isinstance(source, UploadReceipt):
+                source = UploadReceipt.load(source.manifest_path)
+                if source.status != "uploaded":
+                    raise SpeechError("STATE", "only a verified uploaded receipt can start recognition")
             uri = getattr(source, "uri", None)
             if uri is not None:
                 source_info = getattr(source, "source_info", source_info)
@@ -139,7 +144,10 @@ class SpeechTranscriber:
                 uri = source
             if uri is not None:
                 info = copy.deepcopy(source_info or {})
-                info["metadata_origin"] = "caller_supplied"
+                if isinstance(source, UploadReceipt):
+                    info["metadata_origin"] = "uploader_receipt"
+                else:
+                    info["metadata_origin"] = "caller_supplied"
                 info["uri"] = str(uri)
                 request = build_file_request(uri=uri, source_info=info,
                     language=params["language"], diarize=params["diarize"],
@@ -154,6 +162,10 @@ class SpeechTranscriber:
                     request = build_file_request(prepared, language=params["language"],
                         diarize=params["diarize"], literature_text=params["literature_text"])
             job = JobHandle.create(self.job_dir, info, parameters=params, deadline_at=deadline)
+            from .storage import UploadReceipt
+            if isinstance(source, UploadReceipt):
+                job.data["owned_uploads"] = [source.reference()]
+                job.save()
             rpc = self._rpc(job)
             job.set_status("submitting")
             try:
