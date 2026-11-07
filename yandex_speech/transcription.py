@@ -101,7 +101,7 @@ class SpeechTranscriber:
         self._recorded_transport(policy, version)
         if version == "2" and settings.value("enable_diarization"):
             raise SpeechError("CONFIG", "API v2 has no native speaker labeling")
-        if version == "2" or settings.value("object_storage").get("bucket"):
+        if version == "2":
             uploader = self._storage_uploader()
             if getattr(uploader, "_provided_client", None) is None:
                 uploader._credentials()
@@ -194,7 +194,8 @@ class SpeechTranscriber:
                             audio_track=None, language_code=None, diarize=None,
                             timestamps=None, literature_text=None, api_version=None,
                             transport=None, bucket=None, endpoint=None, prefix=None,
-                            use_storage=None, deadline_seconds=1800):
+                            use_storage=None, deadline_seconds=1800,
+                            _on_prepared=None, _on_accepted=None):
         settings = self._options(language_code=language_code, diarize=diarize, timestamps=timestamps,
             literature_text=literature_text, api_version=api_version, transport=transport)
         version = settings.value("api_version")
@@ -203,6 +204,8 @@ class SpeechTranscriber:
             raise SpeechError("CONFIG", "asynchronous recorded mode requires API v2 or v3")
         if version == "2" and settings.value("enable_diarization"):
             raise SpeechError("CONFIG", "API v2 does not supply native speaker labeling")
+        if any(callback is not None and not callable(callback) for callback in (_on_prepared, _on_accepted)):
+            raise SpeechError("CONFIG", "internal job callbacks must be callable")
         if use_storage is not None and type(use_storage) is not bool:
             raise SpeechError("CONFIG", "use_storage must be an explicit boolean")
         actual, reasons = self._recorded_transport(settings.value("transport"), version)
@@ -263,7 +266,15 @@ class SpeechTranscriber:
             if isinstance(source, UploadReceipt):
                 job.data["owned_uploads"] = [source.reference()]
             job.save()
-            rpc = self._rpc(job)
+            if _on_prepared is not None:
+                _on_prepared(job)
+            try:
+                rpc = self._rpc(job)
+            except SpeechError:
+                raise
+            except Exception:
+                raise SpeechError("PREREQUISITE", "selected transport could not initialize locally",
+                                  code="TRANSPORT_INIT") from None
             job.set_status("submitting")
             try:
                 receipt = operation_dict(rpc.recognize_file(request, self._remaining(deadline)))
@@ -281,6 +292,8 @@ class SpeechTranscriber:
             job.data["operation_ids"] = [operation_id]
             job.data["parts"][0].update(operation_id=operation_id, status="running")
             job.set_status("running")
+            if _on_accepted is not None:
+                _on_accepted(job)
             return job
         except SpeechError as error:
             if job is not None:
@@ -383,7 +396,9 @@ class SpeechTranscriber:
                             code="RESULT_EXPIRED", request_id=error.request_id) from None
                     raise
                 self._remaining(deadline)
-                result.update(operation_id=job.operation_id, job_id=job.job_id)
+                result.update(operation_id=job.operation_id, job_id=job.job_id,
+                              job_manifest_path=str(job.manifest_path),
+                              routing=copy.deepcopy(job.data.get("routing", {})))
                 return job.store_result(result)
         except SpeechError as error:
             if error.category in {"CANCELLED", "TIMEOUT"}:
@@ -480,14 +495,8 @@ class SpeechTranscriber:
         return self.poll_until_complete(job, poll_interval=interval)
 
     def transcribe_auto(self, path, **options):
-        settings=self._options(**{k:v for k,v in options.items() if k in {
-            "language_code","diarize","timestamps","literature_text","api_version","transport"}})
-        if settings.value("api_version") == "1":
-            return self._legacy_call("transcribe_auto",path,**options)
-        if settings.value("api_version") == "2":
-            return self.transcribe_async_s3(path, **options)
-        job = self.start_transcription(path, **options)
-        return self.poll_until_complete(job)
+        from .recording_routes import transcribe_recording
+        return transcribe_recording(self, path, options)
 
     def open_stream(self, *, audio_input=None, language_code=None, diarize=None,
                     timestamps=None, literature_text=None, api_version=None,

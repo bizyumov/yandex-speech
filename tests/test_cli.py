@@ -41,42 +41,45 @@ class CliTests(unittest.TestCase):
     def test_cli_only_selector_and_explicit_false_reach_core(self):
         from yandex_speech.cli import transcribe_main
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            config=root/"chosen.json"
+            root = Path(directory)
+            config = root / "chosen.json"
             config.write_text('{"speech":{"language_code":"en-US"}}')
-            job=Mock()
             with patch("yandex_speech.cli.SpeechTranscriber") as cls:
-                client=cls.return_value
-                client.start_transcription.return_value=job
-                client.poll_until_complete.return_value={"text":"test","input_complete":True,"segments":[]}
-                result=transcribe_main(["input.wav","--config",str(config),"--no-literature-text",
-                    "--output",str(root/"out.txt"),"--format","txt"])
-                self.assertEqual(result,0)
-                self.assertEqual(cls.call_args.kwargs["_context"].selected_file,config)
-                self.assertFalse(client.start_transcription.call_args.kwargs["literature_text"])
-                self.assertIsNone(client.start_transcription.call_args.kwargs["language_code"])
+                client = cls.return_value
+                client.transcribe_auto.return_value = {"text": "test", "input_complete": True, "segments": []}
+                code = transcribe_main(["input.wav", "--config", str(config), "--no-literature-text",
+                    "--output", str(root / "out.txt"), "--format", "txt"])
+                self.assertEqual(code, 0)
+                self.assertEqual(cls.call_args.kwargs["_context"].selected_file, config)
+                self.assertFalse(client.transcribe_auto.call_args.kwargs["literature_text"])
+                self.assertIsNone(client.transcribe_auto.call_args.kwargs["language_code"])
+                client.start_transcription.assert_not_called()
+                self.assertFalse((root / "out.job.json").exists())
 
     def test_default_recording_receipt_and_documented_error_codes(self):
         from yandex_speech.cli import transcribe_main
-        import contextlib,io
+        import contextlib, io
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            job=Mock(manifest_path=root/"durable"/"job.json")
+            root = Path(directory)
+            job = Mock(manifest_path=root / "durable/job.json")
+            def complete(source, **options):
+                options["_on_prepared"](job)
+                options["_on_accepted"](job)
+                return {"text": "x", "input_complete": True, "job_manifest_path": str(job.manifest_path)}
             with patch("yandex_speech.cli.SpeechTranscriber") as cls:
-                cls.return_value.start_transcription.return_value=job
-                cls.return_value.poll_until_complete.return_value={"text":"x","input_complete":True}
-                with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(transcribe_main(["audio.wav","--output",str(root/"meeting.txt")]),0)
-            pointer=json.loads((root/"meeting.job.json").read_text())
-            self.assertEqual(pointer["manifest_path"],str(job.manifest_path))
-            for category,expected in [("AUTH",4),("PERMISSION",4),("PREREQUISITE",3),
-                    ("LIMIT",3),("UNSUPPORTED_AUDIO",3),("TIMEOUT",6),
-                    ("OUTPUT_PARTIAL",7),("SUBMISSION_UNCERTAIN",7),("PROVIDER",5)]:
+                cls.return_value.transcribe_auto.side_effect = complete
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(transcribe_main(["audio.wav", "--output", str(root / "meeting.txt")]), 0)
+            pointer = json.loads((root / "meeting.job.json").read_text())
+            self.assertEqual(pointer["manifest_path"], str(job.manifest_path))
+            for category, expected in [("AUTH", 4), ("PERMISSION", 4), ("PREREQUISITE", 3),
+                    ("LIMIT", 3), ("UNSUPPORTED_AUDIO", 3), ("TIMEOUT", 6),
+                    ("OUTPUT_PARTIAL", 7), ("SUBMISSION_UNCERTAIN", 7), ("PROVIDER", 5)]:
                 with self.subTest(category=category):
-                    with patch("yandex_speech.cli.SpeechTranscriber",side_effect=SpeechError(category,"synthetic")):
+                    with patch("yandex_speech.cli.SpeechTranscriber", side_effect=SpeechError(category, "synthetic")):
                         with contextlib.redirect_stderr(io.StringIO()):
-                            result=transcribe_main(["audio.wav","--output",str(root/(category+".txt"))])
-                    self.assertEqual(result,expected)
+                            code = transcribe_main(["audio.wav", "--output", str(root / (category + ".txt"))])
+                    self.assertEqual(code, expected)
 
     def test_recovery_rejects_new_submission_flags(self):
         from yandex_speech.cli import transcribe_main

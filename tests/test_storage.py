@@ -73,7 +73,9 @@ class StorageContractTests(unittest.TestCase):
             with patch.object(client, "transcribe_async_s3", return_value={"api_version": "2"}) as call:
                 result = client.transcribe_auto("audio.ogg", api_version="2")
             self.assertEqual(result["api_version"], "2")
-            call.assert_called_once_with("audio.ogg", api_version="2")
+            self.assertEqual(call.call_args.args, ("audio.ogg",))
+            self.assertEqual(call.call_args.kwargs["api_version"], "2")
+            self.assertGreater(call.call_args.kwargs["deadline_seconds"], 0)
 
     def test_storage_failure_does_not_escape_or_log_provider_payload(self):
         import wave

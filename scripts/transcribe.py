@@ -65,7 +65,7 @@ class _LegacySpeechTranscriber:
         with prepare_audio(Path(path),audio_input=getattr(self,"audio_input",None),
                            audio_track=getattr(self,"audio_track",None),timeout=self._remaining()) as audio:
             if audio.duration_ms > 30_000:
-                raise SttError("audio duration should be less than 30s")
+                raise SpeechError("LIMIT", f"prepared v1 audio is {audio.duration_ms} ms; limit is 30,000 ms")
             if audio.container == "OGG_OPUS" and audio.channels == 1:
                 content=audio.path.read_bytes()
                 params={"format":"oggopus"}
@@ -97,7 +97,7 @@ class _LegacySpeechTranscriber:
             if transmitted == "LPCM":
                 info["duration_ms"] = len(content) / (2 * rate) * 1000
             if len(content)>=1_000_000:
-                raise SttError("audio should be less than 1 mb")
+                raise SpeechError("LIMIT", f"prepared v1 audio is {len(content)} bytes; body must be below 1,000,000 bytes")
             response=self.session.post(SYNC_URL,
                 params={"lang":language_code,"topic":"general","profanityFilter":"false","rawResults":"true",**params},
                 data=content,timeout=self._remaining())
@@ -115,7 +115,11 @@ class _LegacySpeechTranscriber:
     def transcribe_auto(self, path: Path, *, language_code: str, diarize: bool) -> dict[str, Any]:
         try:
             return self.transcribe_direct(path, language_code=language_code, diarize=diarize)
-        except SttError as exc:
+        except (SttError, SpeechError) as exc:
+            if isinstance(exc, SpeechError):
+                if exc.category != "LIMIT":
+                    raise
+                return self.transcribe_chunked_direct(path, language_code=language_code, diarize=diarize)
             message = str(exc)
             if "audio should be less than 1 mb" not in message and "audio duration should be less than 30s" not in message:
                 raise

@@ -51,7 +51,7 @@ Recorded recognition defaults to **API v3**, preferring gRPC when available and 
 
 Native mixed-recording diarization is limited to **two anonymous speakers by the platform**; more than two is a future [new-feature issue](https://github.com/bizyumov/yandex-speech/issues/27). Labels are request-local and do not identify people.
 
-The intended recording fallback chain is **gRPC v3 → REST v3 + Object Storage → FFmpeg split + REST v1**. Dependency-based gRPC/REST selection, owned uploads and versioned v2/v3 recovery are implemented. Automatic v1 fallback and over-limit partitioning remain unfinished. Explicit v1 and v2/S3 entries preserve their documented capabilities; v2 supplies timing without native speaker labels. Missing gRPC never triggers installation without the runtime owner's authorization. [Available options and trade-offs](references/transcription.md#api-options).
+The recording fallback chain is **gRPC v3 → REST v3 + Object Storage/eligible inline → FFmpeg split + REST v1**. Auto mode changes routes only after local preflight failures; an accepted or uncertain request is recovered without resubmission. The text-only v1 tier requires an unfixed API version, compatible transport, no required timing/speakers and `literature_text=false`. Eligible short raw-text inputs can use one direct v1 request. Over-limit asynchronous partitioning remains unfinished. Explicit v1 and v2/S3 entries preserve their documented capabilities; v2 supplies timing without native speaker labels. Missing gRPC never triggers installation without the runtime owner's authorization. [Available options and trade-offs](references/transcription.md#api-options).
 
 ## Integration and verification
 
