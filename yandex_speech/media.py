@@ -116,7 +116,7 @@ def _probe(path: Path, track: int | None, *, timeout=120) -> tuple[dict, float]:
 
 @contextlib.contextmanager
 def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
-                  audio_track: int | None = None, timeout: float = 120):
+                  audio_track: int | None = None, timeout: float = 120, _mono: bool = False):
     if type(timeout) not in (int,float) or not math.isfinite(timeout) or timeout <= 0:
         raise SpeechError("CONFIG", "audio preparation timeout must be positive and finite")
     deadline=time.monotonic()+timeout
@@ -160,8 +160,8 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
     elif original["codec"] == "mp3" and "mp3" in original["format"].split(","):
         container = "MP3"
     remaining()
-    if channels > 2:
-        container = None  # Preserve source admission; adapt above the backend channel capacity.
+    if channels > 2 or _mono and channels != 1:
+        container = None  # Adapt only when channel capacity or requested labeling requires it.
     if container and (original["track"] != 0 or original.get("audio_stream_count", 1) > 1):
         # A native container can still need stream extraction, without PCM expansion.
         with tempfile.TemporaryDirectory(prefix="yandex-speech-audio-") as directory:
@@ -198,13 +198,14 @@ def prepare_audio(source: Path, *, audio_input: AudioInputSpec | None = None,
         yield PreparedAudio(prepared, "WAV", 16000, 1, actual_ms, info)
 
 @contextlib.contextmanager
-def prepare_recording_audio(source, *, api_version="3", audio_input=None, audio_track=None, timeout=120):
-    """Retain source identity while adapting WAV to v2's headerless PCM method."""
+def prepare_recording_audio(source, *, api_version="3", diarize=False, audio_input=None, audio_track=None, timeout=120):
+    """Retain source identity while preparing version and speaker-labeling requirements."""
     version = str(api_version)
-    if version not in {"2", "3"}:
-        raise SpeechError("CONFIG", "recorded storage preparation requires API v2 or v3")
+    if version not in {"2", "3"} or type(diarize) is not bool or version == "2" and diarize:
+        raise SpeechError("CONFIG", "recorded preparation requires compatible API v2/v3 features")
     deadline = time.monotonic() + timeout
-    with prepare_audio(source, audio_input=audio_input, audio_track=audio_track, timeout=timeout) as prepared:
+    with prepare_audio(source, audio_input=audio_input, audio_track=audio_track,
+                       timeout=timeout, _mono=diarize) as prepared:
         if version != "2" or prepared.container != "WAV":
             yield prepared
             return

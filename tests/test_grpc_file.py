@@ -111,6 +111,9 @@ class GrpcFileTests(unittest.TestCase):
                     self.assertEqual(audio.source_info["prepared"]["channels"], 2)
                     self.assertFalse(audio.source_info["converted"])
                     request = build_file_request(audio, diarize=False)
+                    with self.assertRaises(SpeechError) as mono_required:
+                        build_file_request(audio, diarize=True)
+                    self.assertEqual(mono_required.exception.category, "CONFIG")
                     self.assertEqual(request.content, original)
                     if container == "LPCM":
                         self.assertEqual(
@@ -120,6 +123,10 @@ class GrpcFileTests(unittest.TestCase):
                                      "sample_rate_hertz": 16000, "channels": 2}}
                 stored = build_file_request(
                     uri="https://storage.yandexcloud.net/synthetic/stereo", source_info=info)
+                with self.assertRaises(SpeechError) as mono_required:
+                    build_file_request(uri="https://storage.yandexcloud.net/synthetic/stereo",
+                                       source_info=info, diarize=True)
+                self.assertEqual(mono_required.exception.category, "CONFIG")
                 if container == "LPCM":
                     self.assertEqual(
                         stored.recognition_model.audio_format.raw_audio.audio_channel_count, 2)

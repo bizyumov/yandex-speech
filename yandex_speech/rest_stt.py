@@ -57,7 +57,7 @@ def build_rest_request(audio=None, *, uri=None, source_info=None, language="ru-R
         metadata = {"container": audio.container, "sample_rate_hertz": audio.sample_rate_hertz,
                     "channels": audio.channels}
     else:
-        _, metadata = file_source(uri=uri, source_info=source_info)
+        _, metadata = file_source(uri=uri, source_info=source_info, mono_required=diarize)
     audio_format = (
         {"rawAudio": {"audioEncoding": "LINEAR16_PCM",
                       "sampleRateHertz": str(metadata["sample_rate_hertz"]),
@@ -77,7 +77,7 @@ def build_rest_request(audio=None, *, uri=None, source_info=None, language="ru-R
         available = MAX_REST_BYTES - envelope
         if available < 0:
             raise SpeechError("LIMIT", "REST request metadata exceeds the complete JSON wire budget")
-        source, _ = file_source(audio, inline_limit=3 * (available // 4))
+        source, _ = file_source(audio, inline_limit=3 * (available // 4), mono_required=diarize)
         body["content"] = base64.b64encode(source["content"]).decode("ascii")
     else:
         body["uri"] = str(uri)
@@ -122,6 +122,69 @@ def _snake(value):
         return [_snake(item) for item in value]
     return value
 
+def _int64(value):
+    if type(value) is int:
+        valid = 0 <= value <= 9_223_372_036_854_775_807
+    elif isinstance(value, str):
+        valid = bool(re.fullmatch(r"[0-9]{1,19}", value)) and int(value) <= 9_223_372_036_854_775_807
+    else:
+        valid = False
+    if not valid:
+        raise RestRequestError("DATA_LOSS")
+
+
+def _integer_fields(record, names):
+    for name in names:
+        if name in record:
+            _int64(record[name])
+
+
+def _string_fields(record, names):
+    for name in names:
+        if name in record and not isinstance(record[name], str):
+            raise RestRequestError("DATA_LOSS")
+
+
+def _validate_update(update):
+    if not isinstance(update, dict) or not isinstance(update.get("alternatives", []), list):
+        raise RestRequestError("DATA_LOSS")
+    _string_fields(update, ("channelTag",))
+    for alternative in update.get("alternatives", []):
+        if not isinstance(alternative, dict) or not isinstance(alternative.get("words", []), list):
+            raise RestRequestError("DATA_LOSS")
+        _string_fields(alternative, ("text",))
+        _integer_fields(alternative, ("startTimeMs", "endTimeMs"))
+        for word in alternative.get("words", []):
+            if not isinstance(word, dict):
+                raise RestRequestError("DATA_LOSS")
+            _string_fields(word, ("text",))
+            _integer_fields(word, ("startTimeMs", "endTimeMs"))
+
+
+def _validate_event(event):
+    _string_fields(event, ("channelTag",))
+    _integer_fields(event, ("responseWallTimeMs",))
+    if "audioCursors" in event:
+        cursors = event["audioCursors"]
+        if not isinstance(cursors, dict):
+            raise RestRequestError("DATA_LOSS")
+        _integer_fields(cursors, ("receivedDataMs", "resetTimeMs", "partialTimeMs",
+                                 "finalTimeMs", "finalIndex", "eouTimeMs"))
+    kinds = {"partial", "final", "eouUpdate", "finalRefinement", "statusCode",
+             "classifierUpdate", "speakerAnalysis", "conversationAnalysis", "summarization"} & event.keys()
+    if len(kinds) > 1 or any(not isinstance(event[kind], dict) for kind in kinds):
+        raise RestRequestError("DATA_LOSS")
+    for kind in ("partial", "final"):
+        if kind in event:
+            _validate_update(event[kind])
+    if "finalRefinement" in event:
+        refinement = event["finalRefinement"]
+        _integer_fields(refinement, ("finalIndex",))
+        if "normalizedText" in refinement:
+            _validate_update(refinement["normalizedText"])
+    if "eouUpdate" in event:
+        _integer_fields(event["eouUpdate"], ("timeMs",))
+
 
 def _event(line):
     try:
@@ -136,6 +199,7 @@ def _event(line):
     event = frame.get("result")
     if not isinstance(event, dict) or not event:
         raise RestRequestError("DATA_LOSS")
+    _validate_event(event)
     normalized = _snake(event)
     normalized["_raw_provider_event"] = frame
     return normalized
@@ -254,13 +318,13 @@ class RestTransport:
                     del buffer[:end+1]
                     if line.strip():
                         event = _event(line)
-                        count += int("final" in event or "eou_update" in event)
+                        count += int("final" in event)
                         yield event
                 if len(buffer) > MAX_EVENT_BYTES:
                     raise RestRequestError("RESOURCE_EXHAUSTED")
             if buffer.strip():
                 event = _event(bytes(buffer))
-                count += int("final" in event or "eou_update" in event)
+                count += int("final" in event)
                 yield event
             if not count:
                 raise RestRequestError("DATA_LOSS")

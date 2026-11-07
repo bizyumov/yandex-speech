@@ -63,7 +63,8 @@ def check(*, _context=None, _environment=None, _probe=None):
                             "inputs": {"inline": bool(route_available and version in {"1", "3"}),
                                        "caller_uri": bool(route_available and version in {"2", "3"}),
                                        "helper_upload": bool(route_available and version in {"2", "3"} and storage_ready)},
-                            "streaming_available": bool(route_available and version == "3" and route_transport == "grpc")},
+                            "streaming_available": bool(route_available and version == "3" and route_transport == "grpc"
+                                                        and not settings.value("enable_diarization"))},
         "options": [
             {"route": "gRPC v3", "status": "implemented", "tradeoff": "Recorded timing/speakers and bounded arriving audio; optional generated SDK."},
             {"route": "REST v3 inline/URI", "status": "implemented", "tradeoff": "Recorded timing/speakers without generated SDK; inline JSON/base64 has a complete wire cap."},

@@ -113,6 +113,16 @@ class HermesBindingTests(unittest.TestCase):
         self.assertEqual(result["speech_result"]["transport"], "rest")
         self.assertEqual(result["transcript"], "Хвост.")
 
+    def test_native_file_availability_honors_strict_transport_and_version(self):
+        for version, transport, expected in (("3", "grpc", False), ("3", "rest", True),
+                                             ("auto", "auto", True), ("2", "grpc", False),
+                                             ("2", "rest", False), ("1", "grpc", False)):
+            with self.subTest(version=version, transport=transport):
+                provider = self.provider(profile={"api_version": version, "transport": transport})
+                with patch("yandex_speech.transcription.grpc_sdk",
+                           side_effect=SpeechError("PREREQUISITE", "missing optional SDK")):
+                    self.assertEqual(provider.is_available(), expected)
+
     def test_user_file_remains_above_profile_and_host_language_defaults(self):
         path=self.home/".config/yandex-speech/config.json"
         path.parent.mkdir(parents=True)

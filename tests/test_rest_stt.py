@@ -189,7 +189,8 @@ class RestSttTests(unittest.TestCase):
     def test_metadata_only_streams_and_malformed_operation_status_cannot_complete(self):
         from yandex_speech.rest_stt import RestRequestError, RestTransport
         for wire in ({"result": {"sessionUuid": {"uuid": "synthetic"}}},
-                     {"result": {"unexpected": "payload"}}, {"error": {"code": []}}):
+                     {"result": {"unexpected": "payload"}}, {"result": {"eouUpdate": {"timeMs": "1000"}}},
+                     {"error": {"code": []}}):
             with self.subTest(wire=wire):
                 transport = RestTransport("synthetic", _session=Session(Response(wire)))
                 with self.assertRaises(RestRequestError):

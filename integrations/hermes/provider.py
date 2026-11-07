@@ -112,7 +112,7 @@ class YandexTranscriptionProvider(TranscriptionProvider):
 
     def is_available(self):
         try:
-            self._client()
+            self._client()._file_preflight()
             import requests
             return True
         except Exception:

@@ -91,6 +91,18 @@ class ReadinessTests(unittest.TestCase):
                 self.assertFalse(report["effective_route"]["inputs"]["helper_upload"])
                 self.assertFalse(report["effective_route"]["streaming_available"])
 
+    def test_diarization_excludes_arriving_streaming_in_readiness(self):
+        from yandex_speech.readiness import check
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".config/yandex-speech/config.json"
+            path.parent.mkdir(parents=True)
+            path.write_text('{"speech":{"enable_diarization":true}}')
+            with patch("yandex_speech.readiness._available", return_value=True):
+                report = check(_context=RuntimeContext(user_home=root), _environment={})
+            self.assertTrue(report["effective_route"]["available"])
+            self.assertFalse(report["effective_route"]["streaming_available"])
+
     def test_helper_runs_outside_project_without_key(self):
         script = Path("scripts/speech_setup.py").resolve()
         with tempfile.TemporaryDirectory() as home:

@@ -217,3 +217,83 @@ class RestRecordingTests(unittest.TestCase):
         self.assertIn("/own-bucket/", job.source_ref)
         self.assertEqual(len(backend.puts), 1)
         self.assertNotIn("own-storage-secret", job.manifest_path.read_text())
+
+    def test_malformed_rest_metadata_never_publishes_a_complete_result(self):
+        import copy
+        valid = {"audioCursors": {"finalIndex": "0"}, "channelTag": "1",
+            "final": {"alternatives": [{"text": "Хвост", "words": [
+                {"text": "Хвост", "startTimeMs": "100", "endTimeMs": "800"}]}]}}
+        cases = []
+        for start, end in ((False, True), ("nan", "800"), (100.5, 800), ("100", None)):
+            event = copy.deepcopy(valid)
+            event["final"]["alternatives"][0]["words"][0].update(startTimeMs=start, endTimeMs=end)
+            cases.append(event)
+        for channel in ({"invalid": "speaker"}, True, ["1"]):
+            event = copy.deepcopy(valid)
+            event["channelTag"] = channel
+            cases.append(event)
+        cases.extend(({"eouUpdate": {"timeMs": "not-a-time"}},
+                      {"eouUpdate": {"timeMs": False}},
+                      {"final": {"alternatives": "not-a-list"}}))
+        for event in cases:
+            with self.subTest(event=event):
+                frames = (valid, event) if "eouUpdate" in event else (event,)
+                wire = b"\n".join(json.dumps({"result": frame}).encode() for frame in frames)
+                session = Session(Response({"id": "accepted-malformed"}), Response({"done": True}), Response(wire))
+                client = self.client(session)
+                job = client.start_transcription(self.path, transport="rest", timestamps=True, diarize=True)
+                with self.assertRaises(SpeechError) as raised:
+                    client.poll_until_complete(job)
+                self.assertEqual(raised.exception.category, "PROVIDER")
+                self.assertIsNone(JobHandle.load(job.manifest_path).cached_result())
+                self.assertFalse((job.manifest_path.parent / "result.json").exists())
+                self.assertEqual(sum(call[0] == "POST" for call in session.calls), 1)
+
+    def test_diarization_adapts_local_stereo_without_changing_ordinary_admission(self):
+        import base64, io
+        stereo = self.root / "stereo.wav"
+        with wave.open(str(stereo), "wb") as stream:
+            stream.setnchannels(2); stream.setsampwidth(2); stream.setframerate(16000)
+            stream.writeframes(bytes(64000))
+        original = hashlib.sha256(stereo.read_bytes()).hexdigest()
+        for diarize in (False, True):
+            with self.subTest(diarize=diarize):
+                session = Session(Response({"id": "accepted-stereo"}))
+                job = self.client(session).start_transcription(stereo, transport="rest", diarize=diarize)
+                body = json.loads(session.calls[0][2]["data"])
+                audio = base64.b64decode(body["content"])
+                with wave.open(io.BytesIO(audio), "rb") as stream:
+                    self.assertEqual(stream.getnchannels(), 1 if diarize else 2)
+                self.assertEqual(job.source_info["original"]["channels"], 2)
+                self.assertEqual(job.source_info["prepared"]["channels"], 1 if diarize else 2)
+                self.assertEqual(job.source_info["source_sha256"], original)
+        self.assertEqual(hashlib.sha256(stereo.read_bytes()).hexdigest(), original)
+
+    def test_stereo_external_uri_labeling_is_rejected_before_submission(self):
+        info = {"duration_ms": 1000, "size_bytes": 64000,
+                "prepared": {"container": "LPCM", "sample_rate_hertz": 16000, "channels": 2}}
+        session = Session()
+        with self.assertRaises(SpeechError) as raised:
+            self.client(session).start_transcription("https://storage.yandexcloud.net/private/stereo.pcm",
+                source_info=info, transport="rest", diarize=True)
+        self.assertEqual(raised.exception.category, "CONFIG")
+        self.assertEqual(session.calls, [])
+
+    def test_upload_labeling_preparation_honors_file_default_and_explicit_false(self):
+        from yandex_speech.storage import ObjectStorageUploader
+        from tests.test_owned_storage import FakeS3
+        config = self.root / ".config/yandex-speech/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"speech":{"enable_diarization":true}}')
+        source = self.root / "stereo.wav"
+        with wave.open(str(source), "wb") as stream:
+            stream.setnchannels(2); stream.setsampwidth(2); stream.setframerate(16000)
+            stream.writeframes(bytes(64000))
+        uploader = ObjectStorageUploader(bucket="private-source", job_dir=self.root / "uploads",
+            _context=self.context, _client=FakeS3())
+        selected = uploader.upload(source)
+        explicit = uploader.upload(source, diarize=False)
+        self.assertEqual(selected.source_info["prepared"]["channels"], 1)
+        self.assertEqual(explicit.source_info["prepared"]["channels"], 2)
+        self.assertEqual(selected.source_info["original"]["channels"], 2)
+        self.assertNotEqual(selected.key, explicit.key)

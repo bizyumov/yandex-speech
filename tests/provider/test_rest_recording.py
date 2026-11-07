@@ -35,7 +35,11 @@ class LiveRestRecordingTests(unittest.TestCase):
             json.dump(report, stream, indent=2)
 
     def test_rest_inline_two_speakers_without_generated_sdk_and_cli_cache_recovery(self):
-        source = self.fixtures / "two-speaker.wav"
+        source = self.root / "two-speaker-stereo.wav"
+        converted = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-n",
+            "-i", str(self.fixtures / "two-speaker.wav"), "-ac", "2", "-ar", "16000",
+            "-c:a", "pcm_s16le", str(source)], capture_output=True, timeout=60)
+        self.assertEqual(converted.returncode, 0, "synthetic stereo preparation failed")
         original = hashlib.sha256(source.read_bytes()).hexdigest()
         with patch("yandex_speech.transcription.grpc_sdk", side_effect=AssertionError("gRPC was used")):
             with patch("yandex_speech.grpc_stt.sdk", side_effect=AssertionError("generated SDK was used")):
@@ -43,6 +47,8 @@ class LiveRestRecordingTests(unittest.TestCase):
                     diarize=True, timestamps=True, deadline_seconds=120)
                 result = self.client.poll_until_complete(job, transport="rest", deadline_seconds=120)
         self.assertTrue(result["input_complete"])
+        self.assertEqual(job.source_info["original"]["channels"], 2)
+        self.assertEqual(job.source_info["prepared"]["channels"], 1)
         self.assertEqual(result["transport"], "rest")
         self.assertEqual(len({segment["speaker"] for segment in result["segments"]}), 2)
         self.assertIn("последняя контрольная фраза", result["text"].casefold())
@@ -61,7 +67,8 @@ class LiveRestRecordingTests(unittest.TestCase):
         self.assertGreater(output.stat().st_size, 0)
         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original)
         self.record(result, job, generated_sdk_calls=0, source_unchanged=True,
-                    native_speakers=2, tail_verified=True, external_cli_cache_recovery=True)
+                    native_speakers=2, source_channels=2, prepared_channels=1,
+                    tail_verified=True, external_cli_cache_recovery=True)
 
     def test_accepted_grpc_operation_recovers_through_rest_without_another_submission(self):
         from yandex_speech.grpc_stt import GrpcTransport

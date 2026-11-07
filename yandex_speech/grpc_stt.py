@@ -51,7 +51,7 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
     _, p, *_ = sdk()
     source, metadata = file_source(audio, uri=uri, source_info=source_info,
         inline_limit=MAX_GRPC_BYTES, duration_limit=MAX_FILE_DURATION_MS,
-        storage_limit=MAX_STORAGE_BYTES)
+        storage_limit=MAX_STORAGE_BYTES, mono_required=diarize)
     model = _model(p, metadata["container"], metadata["sample_rate_hertz"], language=language,
                    diarize=diarize, literature_text=literature_text, channels=metadata["channels"])
     request = p.RecognizeFileRequest(**source, recognition_model=model,

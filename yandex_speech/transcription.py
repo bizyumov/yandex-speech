@@ -14,7 +14,7 @@ from .errors import SpeechError
 from .grpc_stt import (GrpcTransport, build_file_request, operation_dict, rpc_error, status_name, sdk as grpc_sdk)
 from .rest_stt import RestTransport, build_rest_request
 from .jobs import JobHandle
-from .media import AudioInputSpec, prepare_audio
+from .media import AudioInputSpec, prepare_recording_audio
 from .results import ResultAccumulator, normalize_v2_result
 
 _OPERATIONS = threading.BoundedSemaphore(2)
@@ -77,6 +77,38 @@ class SpeechTranscriber:
                 raise
             return "rest", ["optional gRPC dependencies unavailable; REST v3 selected"]
         return "grpc", []
+
+    def _storage_uploader(self, *, bucket=None, endpoint=None, prefix=None):
+        from .storage import ObjectStorageUploader
+        if self._uploader is not None:
+            return self._uploader
+        return ObjectStorageUploader(bucket=bucket, endpoint=endpoint, prefix=prefix,
+            job_dir=self.job_dir.parent / "uploads", _context=self.context,
+            _adapter_defaults=self.adapter_defaults, _environment=self._environment)
+
+    def _file_preflight(self):
+        """Check configured file prerequisites without media or provider requests."""
+        if not self.api_key:
+            raise SpeechError("AUTH", "YANDEX_SPEECH_API_KEY is required")
+        settings = self._options()
+        version = settings.value("api_version")
+        version = "3" if version == "auto" else version
+        policy = settings.value("transport")
+        if version == "1":
+            if policy == "grpc" or settings.value("enable_diarization") or settings.value("enable_timestamps"):
+                raise SpeechError("CONFIG", "API v1 cannot fulfill the selected transport or required metadata")
+            return
+        self._recorded_transport(policy, version)
+        if version == "2" and settings.value("enable_diarization"):
+            raise SpeechError("CONFIG", "API v2 has no native speaker labeling")
+        if version == "2" or settings.value("object_storage").get("bucket"):
+            uploader = self._storage_uploader()
+            if getattr(uploader, "_provided_client", None) is None:
+                uploader._credentials()
+                try:
+                    import boto3
+                except ImportError:
+                    raise SpeechError("PREREQUISITE", "boto3 is required for configured helper uploads") from None
 
     @staticmethod
     def _require_metadata(result, parameters):
@@ -185,17 +217,15 @@ class SpeechTranscriber:
                       "diarize": settings.value("enable_diarization"),
                       "timestamps": settings.value("enable_timestamps"),
                       "literature_text": settings.value("literature_text")}
-            from .storage import ObjectStorageUploader, UploadReceipt
+            from .storage import UploadReceipt
             supplied_uri = getattr(source, "uri", None) or (isinstance(source, str) and source.startswith("https://"))
             storage_selected = use_storage is True or use_storage is None and bool(
                 bucket or settings.value("object_storage").get("bucket"))
             if not supplied_uri and (storage_selected or version == "2"):
                 if use_storage is False:
                     raise SpeechError("CONFIG", "API v2 cannot use inline content; select storage or API v3")
-                uploader = self._uploader or ObjectStorageUploader(bucket=bucket, endpoint=endpoint, prefix=prefix,
-                    job_dir=self.job_dir.parent / "uploads", _context=self.context,
-                    _adapter_defaults=self.adapter_defaults, _environment=self._environment)
-                source = uploader.upload(Path(source), api_version=version, audio_input=audio_input,
+                uploader = self._storage_uploader(bucket=bucket, endpoint=endpoint, prefix=prefix)
+                source = uploader.upload(Path(source), api_version=version, diarize=params["diarize"], audio_input=audio_input,
                     audio_track=audio_track, deadline_seconds=self._remaining(deadline, cap=None))
             if isinstance(source, UploadReceipt):
                 source = UploadReceipt.load(source.manifest_path)
@@ -222,8 +252,9 @@ class SpeechTranscriber:
                 inline = _INLINE.acquire(blocking=False)
                 if not inline:
                     raise SpeechError("RATE_LIMIT", "one local inline upload is already active")
-                with prepare_audio(Path(source), audio_input=audio_input, audio_track=audio_track,
-                                   timeout=self._remaining(deadline, cap=None)) as prepared:
+                with prepare_recording_audio(Path(source), api_version=version, diarize=params["diarize"],
+                        audio_input=audio_input, audio_track=audio_track,
+                        timeout=self._remaining(deadline, cap=None)) as prepared:
                     info = copy.deepcopy(prepared.source_info)
                     request = builder(prepared, **request_options)
             job = JobHandle.create(self.job_dir, info, parameters=params, deadline_at=deadline,

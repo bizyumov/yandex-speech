@@ -13,7 +13,7 @@ MAX_STORAGE_BYTES = 1_000_000_000
 
 
 def file_source(audio=None, *, uri=None, source_info=None, inline_limit=MAX_INLINE_BYTES,
-                duration_limit=MAX_FILE_DURATION_MS, storage_limit=MAX_STORAGE_BYTES):
+                duration_limit=MAX_FILE_DURATION_MS, storage_limit=MAX_STORAGE_BYTES, mono_required=False):
     if uri is None:
         if audio is None:
             raise SpeechError("CONFIG", "prepared audio is required")
@@ -49,6 +49,9 @@ def file_source(audio=None, *, uri=None, source_info=None, inline_limit=MAX_INLI
         raise SpeechError("CONFIG", "source metadata does not describe a supported prepared representation")
     if type(channels) is not int or channels not in {1, 2}:
         raise SpeechError("CONFIG", "source metadata must describe one or two audio channels")
+    if mono_required and channels != 1:
+        raise SpeechError("CONFIG", "native speaker labeling requires mono prepared audio; "
+                          "prepare local audio or upload with diarize=True")
     metadata = {"duration_ms": duration, "size_bytes": size, "container": container,
                 "sample_rate_hertz": rate, "channels": channels}
     if uri is not None:

@@ -18,6 +18,8 @@ def event_dict(event) -> dict:
 def _seconds(value):
     if value is None:
         return None
+    if type(value) not in (int, float, str):
+        raise SpeechError("PROVIDER", "invalid provider timing")
     try:
         number = float(value) / 1000
     except (ValueError, TypeError):
@@ -25,6 +27,13 @@ def _seconds(value):
     if not math.isfinite(number) or number < 0:
         raise SpeechError("PROVIDER", "invalid provider timing")
     return number
+
+def _channel(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SpeechError("PROVIDER", "invalid provider channel tag")
+    return value
 
 
 class ResultAccumulator:
@@ -42,7 +51,7 @@ class ResultAccumulator:
     def feed(self, response):
         event = event_dict(response)
         self.raw.append(event.pop("_raw_provider_event") if "_raw_provider_event" in event else event)
-        channel = str(event.get("channel_tag") or "")
+        channel = _channel(event.get("channel_tag"))
         if "partial" in event:
             alternatives = event["partial"].get("alternatives", [])
             self.preview = alternatives[0].get("text", "") if alternatives else ""
@@ -50,7 +59,7 @@ class ResultAccumulator:
             alternatives = event["final"].get("alternatives", [])
             if alternatives:
                 index = int(event.get("audio_cursors", {}).get("final_index", 0))
-                channel = channel or str(event["final"].get("channel_tag") or "")
+                channel = channel or _channel(event["final"].get("channel_tag"))
                 key = (index, channel)
                 value = alternatives[0]
                 if key in self.finals and self.finals[key] != value:
@@ -59,7 +68,7 @@ class ResultAccumulator:
         if "final_refinement" in event:
             update = event["final_refinement"]
             normalized = update.get("normalized_text", {})
-            channel = channel or str(normalized.get("channel_tag") or "")
+            channel = channel or _channel(normalized.get("channel_tag"))
             alternatives = normalized.get("alternatives", [])
             if alternatives:
                 key = (int(update.get("final_index", 0)), channel)
@@ -174,7 +183,7 @@ def normalize_v2_result(operation, *, parameters, source_info=None):
             words.append({"text": word.get("word", ""), "start_time_ms": milliseconds(word.get("startTime")),
                           "end_time_ms": milliseconds(word.get("endTime"))})
         accumulator.feed({"audio_cursors": {"final_index": index},
-            "final": {"channel_tag": str(chunk.get("channelTag") or ""),
+            "final": {"channel_tag": _channel(chunk.get("channelTag")),
                       "alternatives": [{"text": alternative.get("text", ""), "words": words}]}})
     result = accumulator.result(source_info=source_info)
     result.update(api_version="2", transport="rest", raw=[copy.deepcopy(operation)])
