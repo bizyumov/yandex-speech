@@ -310,6 +310,7 @@ class _Capture:
         self.rejected = rejected
         self.ended = self.committed = self.admitted = self.cancelled = False
         self.pipeline = self.delivery_task = None
+        self.delivery_pending = False
         self.result = None
         self.packets = 0
         self.sequence_gaps = self.reordered_or_duplicate = 0
@@ -324,6 +325,7 @@ class ReceiverObserver:
     def __init__(self, manager, guild_id, voice, receiver):
         self.manager, self.guild_id, self.voice, self.receiver = manager, guild_id, voice, receiver
         self.connection = voice._connection
+        self.channel_id = getattr(getattr(voice, "channel", None), "id", None)
         self.states = {}
         self.lock = threading.RLock()
         self.closed = False
@@ -340,6 +342,7 @@ class ReceiverObserver:
         self.connection.add_socket_listener(self.callback)
         self.manager.emit("observer_attached", guild=self.guild_id,
                           receiver_identity=id(self.receiver), voice_identity=id(self.voice),
+                          voice_channel=self.channel_id,
                           quarantined_prefixes=len(self.states),
                           native_methods={name: _function_stamp(getattr(self.receiver, name, None))
                               for name in ("_on_packet", "check_silence", "map_ssrc")})
@@ -579,6 +582,8 @@ class DiscordIngress:
                 or self.observers.get(observer.guild_id) is not observer
                 or getattr(self.adapter, "_voice_receivers", {}).get(observer.guild_id) is not observer.receiver
                 or getattr(self.adapter, "_voice_clients", {}).get(observer.guild_id) is not observer.voice
+                or observer.channel_id is None
+                or getattr(getattr(observer.voice, "channel", None), "id", None) != observer.channel_id
                 or not observer.receiver._running or observer.receiver._paused
                 or not observer.voice.is_connected()):
             return False
@@ -597,6 +602,7 @@ class DiscordIngress:
         for guild_id, observer in list(self.observers.items()):
             if (receivers.get(guild_id) is not observer.receiver
                     or voices.get(guild_id) is not observer.voice
+                    or getattr(getattr(observer.voice, "channel", None), "id", None) != observer.channel_id
                     or not observer.receiver._running or not observer.voice.is_connected()):
                 self.observers.pop(guild_id, None)
                 observer.close()
@@ -634,7 +640,7 @@ class DiscordIngress:
     def start_capture(self, capture):
         with self.lock:
             active = sum(not item.pipeline or not item.pipeline.done.is_set()
-                         or (item.result is not None and (item.delivery_task is None or not item.delivery_task.done()))
+                         or item.delivery_pending
                          for item in self.captures.values())
             if active >= 8 or self.closed:
                 return False
@@ -681,31 +687,41 @@ class DiscordIngress:
                   accepted_bytes=capture.pipeline.accepted_bytes,
                   first_partial_at=capture.pipeline.first_partial_at,
                   source_last_packet_at=capture.last_packet_at)
-        if text:
+        from tools.voice_mode_transcript import is_whisper_hallucination
+        if text and not is_whisper_hallucination(text):
+            capture.delivery_pending = True
             self.loop.call_soon_threadsafe(self._schedule_delivery, capture, context=self.scope.copy())
+        else:
+            capture.delivery_pending = False
+            self.emit("stream_no_input", capture=capture.id)
 
     def _schedule_delivery(self, capture):
         if not self.closed and not capture.cancelled:
             capture.delivery_task = self.loop.create_task(self._deliver(capture), context=self.scope.copy())
+        else:
+            capture.delivery_pending = False
 
     async def _deliver(self, capture):
         from hermes_cli.plugins_loader import _plugin_home_scope
-        with _plugin_home_scope(self.workspace):
-            # No await may intervene between this validation and Native's synchronous snapshot.
-            if capture.cancelled or capture.committed or not self.allowed(
-                    capture.observer, capture.user_id, capture.binding):
-                self.emit("delivery_refused", capture=capture.id)
-                return
-            callback = getattr(self.adapter, "_voice_input_callback", None)
-            if not callable(callback):
-                self.emit("delivery_refused", capture=capture.id, reason="no native voice callback")
-                return
-            text = str(capture.result.get("transcript", "")).strip()
-            capture.text_hash = _text_digest(text)
-            capture.committed = True
-            self.emit("delivery_committed", capture=capture.id)
-            await callback(guild_id=capture.observer.guild_id,
-                           user_id=capture.user_id, transcript=text)
+        try:
+            with _plugin_home_scope(self.workspace):
+                # No await may intervene before Native takes its synchronous source snapshot.
+                if capture.cancelled or capture.committed or not self.allowed(
+                        capture.observer, capture.user_id, capture.binding):
+                    self.emit("delivery_refused", capture=capture.id)
+                    return
+                callback = getattr(self.adapter, "_voice_input_callback", None)
+                if not callable(callback):
+                    self.emit("delivery_refused", capture=capture.id, reason="no native voice callback")
+                    return
+                text = str(capture.result.get("transcript", "")).strip()
+                capture.text_hash = _text_digest(text)
+                capture.committed = True
+                self.emit("delivery_committed", capture=capture.id)
+                await callback(guild_id=capture.observer.guild_id,
+                               user_id=capture.user_id, transcript=text)
+        finally:
+            capture.delivery_pending = False
 
     def observe_pre_transcription(self, file_path, *, source=None, provider=None, **kwargs):
         if provider == "yandex":

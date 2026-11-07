@@ -40,7 +40,7 @@ async def exercise(home, provider, fixture, seconds):
 
     native = commands.Bot(command_prefix="!", intents=discord.Intents.none())
     await native._async_setup_hook()
-    channel = SimpleNamespace(guild=SimpleNamespace(id=7), members=[],
+    channel = SimpleNamespace(id=70, guild=SimpleNamespace(id=7), members=[],
                               _get_voice_client_key=lambda: (7, "guild_id"))
     voice = discord.VoiceClient(native, channel)
     recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -61,6 +61,9 @@ async def exercise(home, provider, fixture, seconds):
     adapter._voice_text_channels = {7: 10}
     adapter._allowed_user_ids = {"42"}
     adapter._allowed_role_ids = set()
+    owned_voices = [(voice, recv_socket)]
+    owned_receivers = [receiver]
+    owned_listeners = []
     callbacks = []
     finished = asyncio.get_running_loop().create_future()
 
@@ -83,6 +86,7 @@ async def exercise(home, provider, fixture, seconds):
         connection._socket_reader.resume(force=True)
         listen = asyncio.create_task(adapter._voice_listen_loop(7))
         adapter._voice_listen_tasks[7] = listen
+        owned_listeners.append(listen)
         encoder = discord.opus.Encoder()
         box = nacl.secret.Aead(connection.secret_key)
         started = time.monotonic()
@@ -101,7 +105,7 @@ async def exercise(home, provider, fixture, seconds):
         capture.pipeline.wait(2)
         transcript = payload["transcript"]
         from yandex_speech.discord_ingress import _tail_digests
-        return {
+        report = {
             "scope": "component: actual SDK UDP, stock receiver/adapter, real Yandex; not Discord network",
             "goal_proven": False,
             "normal_plugin_loaded": True,
@@ -123,19 +127,97 @@ async def exercise(home, provider, fixture, seconds):
             "tail_sha256": _tail_digests(transcript),
             "events_path": str(manager.events_path),
         }
+        # Verify normal discovery/re-wiring on the SAME SDK client after the real stream.
+        from hermes_cli.plugins import discover_plugins
+        from agent.transcription_registry import get_provider
+        original_receiver_callback = receiver._on_packet
+        old_observer_callback = manager.observers[7].callback
+        old_manager = manager
+        discover_plugins(force=True)
+        replacement = get_provider("yandex", scope=str(home))
+        manager = replacement._discord_ingress
+        adapter.rewire_plugin_handlers()
+        assert old_manager.closed and manager is not old_manager
+        assert manager.native is native and manager.adapter is adapter
+        assert original_receiver_callback in connection._socket_reader._callbacks
+        assert old_observer_callback not in connection._socket_reader._callbacks
+        assert len(connection._socket_reader._callbacks) == 2
+        report["normal_plugin_reload_same_client"] = True
+
+        def test_packet(key, ssrc, sequence):
+            test_encoder = discord.opus.Encoder()
+            opus = test_encoder.encode(raw[-3840:], 960)
+            header = struct.pack(">BBHII", 0x80, 0x78, sequence, sequence * 960, ssrc)
+            suffix = struct.pack(">I", sequence + 1)
+            encrypted = nacl.secret.Aead(key).encrypt(opus, header, suffix + bytes(20)).ciphertext
+            return header + encrypted + suffix
+
+        async def require_decode(target, expected):
+            deadline = asyncio.get_running_loop().time() + 3
+            while target._decode_ok < expected and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(.01)
+            assert target._decode_ok == expected and target._decode_failed == 0
+
+        # Actual Native websocket hook refreshes the fixture transport key; denied audio must not open ASR.
+        second_key = bytes(range(32, 64))
+        connection.secret_key = second_key
+        await connection.hook(None, {"op": 4, "d": {}})
+        await connection.hook(None, {"op": 5, "d": {"ssrc": 4321, "user_id": "84"}})
+        before_decode = receiver._decode_ok
+        sender.sendto(test_packet(second_key, 4321, 500), recv_socket.getsockname())
+        await require_decode(receiver, before_decode + 1)
+        assert manager.counts.get("native_stream_opened", 0) == 0
+        report["sdk_secret_rekey_verified"] = True
+        report["denied_source_opened_no_stream"] = True
+
+        # Rejoin uses the actual Native join method, with only the channel transport as a fixture.
+        receiver.stop()
+        connection._connected.clear()
+        connection._state = ConnectionFlowState.disconnected
+        next_voice = discord.VoiceClient(native, channel)
+        next_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        next_socket.bind(("127.0.0.1", 0))
+        next_socket.setblocking(False)
+        owned_voices.append((next_voice, next_socket))
+        next_connection = next_voice._connection
+        next_connection.socket = next_socket
+        next_connection.secret_key = second_key
+        next_connection.ssrc = 1999
+        next_connection._state = ConnectionFlowState.connected
+        next_connection._connected.set()
+        async def fixture_connect():
+            return next_voice
+        channel.connect = fixture_connect
+        assert await adapter.join_voice_channel(channel, text_channel_id=10)
+        next_receiver = adapter._voice_receivers[7]
+        owned_receivers.append(next_receiver)
+        owned_listeners.append(adapter._voice_listen_tasks[7])
+        manager._synchronize()
+        assert manager.observers[7].voice is next_voice
+        assert manager.observers[7].receiver is next_receiver
+        assert len(next_connection._socket_reader._callbacks) == 2
+        await next_connection.hook(None, {"op": 5, "d": {"ssrc": 5432, "user_id": "84"}})
+        next_connection._socket_reader.resume(force=True)
+        sender.sendto(test_packet(second_key, 5432, 600), next_socket.getsockname())
+        await require_decode(next_receiver, 1)
+        assert manager.counts.get("native_stream_opened", 0) == 0
+        report["sdk_rejoin_same_adapter_verified"] = True
+        return report
     finally:
         manager.close()
-        if listen is not None:
-            listen.cancel()
-            await asyncio.gather(listen, return_exceptions=True)
+        for task in owned_listeners:
+            task.cancel()
+        await asyncio.gather(*owned_listeners, return_exceptions=True)
         for task in getattr(adapter, "_voice_timeout_tasks", {}).values():
             task.cancel()
-        receiver.stop()
-        connection._socket_reader.stop()
-        await asyncio.to_thread(connection._socket_reader.join, 2)
-        recv_socket.close()
+        for owned_receiver in owned_receivers:
+            owned_receiver.stop()
+        for owned_voice, owned_socket in owned_voices:
+            owned_voice._connection._socket_reader.stop()
+            await asyncio.to_thread(owned_voice._connection._socket_reader.join, 2)
+            owned_socket.close()
+            owned_voice.cleanup()
         sender.close()
-        voice.cleanup()
         await native.close()
 
 

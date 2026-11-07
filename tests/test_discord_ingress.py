@@ -276,7 +276,8 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.listeners = [lambda data: None]
         self.connection = SimpleNamespace(add_socket_listener=self.listeners.append,
                                           remove_socket_listener=self.listeners.remove)
-        self.voice = SimpleNamespace(_connection=self.connection, is_connected=lambda: True)
+        self.voice = SimpleNamespace(_connection=self.connection, is_connected=lambda: True,
+                                     channel=SimpleNamespace(id=70))
         self.receiver = SimpleNamespace(_buffers={}, _ssrc_to_user={1234: 42},
                                         _lock=threading.Lock(), _running=True, _paused=False)
         self.native = SimpleNamespace(get_guild=lambda guild: SimpleNamespace(id=guild))
@@ -398,6 +399,39 @@ class CoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(manager.observers)
         self.assertEqual(len(self.listeners), 1)
         self.assertIsNone(manager.file_policy.decide("/tmp/vc_listen_offline.wav"))
+
+    async def test_same_text_binding_cannot_hide_a_voice_channel_move(self):
+        manager = self.make_manager()
+        self.packet(manager)
+        capture = next(iter(manager.captures.values()))
+        self.voice.channel = SimpleNamespace(id=80)
+        manager._synchronize()
+        self.packet(manager)
+        self.assertTrue(capture.cancelled)
+        self.assertEqual(capture.pipeline.input_bytes, 3840)
+        self.end_native_buffer(manager)
+        await asyncio.sleep(.05)
+        self.assertFalse(self.adapter.routes)
+
+    async def test_more_than_eight_empty_finals_do_not_block_valid_speech(self):
+        class BlankPipeline(OfflinePipeline):
+            def end_audio(self):
+                self.ends += 1
+                self.done.set()
+                self.on_result(self, {"success": True, "transcript": "", "provider": "fixture"})
+        manager = self.make_manager()
+        manager.pipeline_type = BlankPipeline
+        for _ in range(10):
+            self.packet(manager)
+            self.end_native_buffer(manager)
+            await asyncio.sleep(0)
+        self.assertEqual(len(manager.captures), 10)
+        self.assertFalse(self.adapter.routes)
+        manager.pipeline_type = OfflinePipeline
+        self.packet(manager)
+        self.end_native_buffer(manager)
+        await asyncio.sleep(.05)
+        self.assertEqual(self.adapter.routes, [10])
 
 
 if __name__ == "__main__":

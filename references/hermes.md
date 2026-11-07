@@ -1,8 +1,8 @@
-# Hermes 0.22.5 integration
+# Hermes integration
 
 The optional native plugin lives at integrations/hermes and registers both a TranscriptionProvider and a TTSProvider named yandex. The skill remains the installed discovery entry; the plugin adds a host binding. No productive profile is modified by import/tests.
 
-For an authorized profile, link its plugin directory entry named yandex-speech to the installed skill's integrations/hermes directory, then enable that plugin through Hermes's normal plugin configuration. Ensure the standard Hermes environment can import the skill and its base dependencies; gRPC is needed for arriving recognition or an explicit gRPC file selection. Verify the plugin is loaded in that exact profile before changing its selected STT provider. Example profile settings:
+For an authorized profile, install and enable the binding through the stock Hermes CLI described below; an existing reviewed installation remains usable. Ensure the standard Hermes environment can import the skill and its base dependencies; gRPC is needed for arriving recognition or an explicit gRPC file selection. Verify the plugin is loaded in that exact profile before changing its selected STT provider. Example profile settings:
 
 ```yaml
 stt:
@@ -61,6 +61,8 @@ For an explicit request to speak, use an available host operation that targets t
 
 ### Executable delivery matrix
 
+Historical trace of the earlier inspected host. The fork links below preserve research provenance; they are not installation requirements for the stock0.23.0 binding.
+
 The following source trace uses the preserved 0.22.5 host plus its [tested native-config correction](https://github.com/bizyumov/hermes-agent/tree/d70347878ae939e09d140839e7def0f127df5344). These are in-process host methods, not new terminal commands or a gateway RPC. Supply the owning adapter/profile, addressed source and current conversation binding. A source trace establishes which call is possible; delivery and listening require their own receipts.
 
 | Requested outcome / execution branch | Actual operation and required context | Result and remaining verification |
@@ -72,7 +74,7 @@ The following source trace uses the preserved 0.22.5 host plus its [tested nativ
 | First response before a queued follow-up | `_run_agent_deliver_first_response` calls `_deliver_queued_first_response`, which edits/sends final text and delivers explicit media. | This branch has no whole-file automatic `play_tts` call. Its successful text/media receipt cannot pass a speaking request. A prior streaming consumer is separate and requires a supported adapter sink. |
 | Steered turn / leftover steer | In-band steering modifies the current run. A leftover steer is merged into the pending follow-up; an event-less follow-up retains the source/prompt but has no new voice message type. | No distinct speaking operation is added by steering. Trace the resulting normal or queued completion; preserve original speaker, delivery intent and generation explicitly when repairing this gap. |
 | Delayed process completion | `_send_watcher_message` sends a non-conversational text notice. `_inject_watch_notification` instead admits an internal `MessageType.TEXT` event using the stored originating route. | The former is text delivery; the latter starts a separately routed turn. Neither is a reliable explicit speaking action. Verify the actual event branch rather than assuming the latest foreground voice context applies. |
-| Progressive reply | `StreamingTTSConsumer` resolves the selected provider and calls the adapter's `supports_streaming_tts`, `begin_streaming_tts`, `write_streaming_tts`, `finish_streaming_tts` and abort operations. | This Discord adapter inherits the unsupported default sink. Native Yandex PCM availability alone cannot make Discord playback progressive. A narrow first-party sink extension is required. |
+| Progressive reply | `StreamingTTSConsumer` resolves the selected provider and calls the adapter's `supports_streaming_tts`, `begin_streaming_tts`, `write_streaming_tts`, `finish_streaming_tts` and abort operations. | This Discord adapter inherits the unsupported default sink. Native Yandex PCM availability alone cannot make Discord playback progressive. A plugin must provide a supported progressive sink; this historical trace does not require a Hermes core patch. |
 
 The relevant host sources are [voice routing](https://github.com/bizyumov/hermes-agent/blob/d70347878ae939e09d140839e7def0f127df5344/gateway/run_voice.py), [queued and delayed delivery](https://github.com/bizyumov/hermes-agent/blob/d70347878ae939e09d140839e7def0f127df5344/gateway/run_notifications.py), [turn/follow-up handling](https://github.com/bizyumov/hermes-agent/blob/d70347878ae939e09d140839e7def0f127df5344/gateway/run_turn.py), [Discord capture/playback](https://github.com/bizyumov/hermes-agent/blob/d70347878ae939e09d140839e7def0f127df5344/plugins/platforms/discord/adapter.py) and [stream consumer](https://github.com/bizyumov/hermes-agent/blob/d70347878ae939e09d140839e7def0f127df5344/gateway/streaming_tts_consumer.py).
 
@@ -82,7 +84,7 @@ Current Discord receive decodes 48 kHz stereo PCM into per-SSRC buffers. After s
 
 The legacy playback path pauses receive until playback ends. The optional mixer path keeps receive running, but still delivers completed utterances. The current gateway interrupt monitor waits for a pending event, transcribes pending voice first, then calls `agent.interrupt` and aborts its streaming-TTS consumer. That is not early incoming-audio cancellation, and it can interrupt agent work. No dedicated notification that a reply was partly heard is established by these paths. Do not claim that changing busy-input or notification settings supplies this missing contract.
 
-The first-party input extension must feed authorized source packets before WAV completion, preserve sequence/time and binding ownership, bound queues and choose exactly one completion path. Continuous recording is record-only and does not submit segment finals as commands. Reliable explicit speaking, a Discord PCM sink and output-only interruption need their separate host design and consuming-client evidence under [issue #4](https://github.com/bizyumov/yandex-speech/issues/4). The current text-similarity duplicate filter can suppress a legitimate repeated request; the replacement must deduplicate source identity instead. No live event, playback or hour-long acceptance is claimed by this matrix.
+The plugin input binding must feed authorized source packets before WAV completion, preserve sequence/time and binding ownership, bound queues and choose exactly one completion path. Continuous recording is record-only and does not submit segment finals as commands. Reliable explicit speaking, a Discord PCM sink and output-only interruption need their separate host design and consuming-client evidence under [issue #4](https://github.com/bizyumov/yandex-speech/issues/4). The current text-similarity duplicate filter can suppress a legitimate repeated request; the replacement must deduplicate source identity instead. No live event, playback or hour-long acceptance is claimed by this matrix.
 
 
 ## Native Yandex TTS
@@ -112,25 +114,32 @@ Native file requests map host ogg/opus to SpeechKit oggopus and return a path wi
 A same-name `tts.providers.yandex` command entry still takes precedence over native registration. Reconcile it through the scoped setup workflow before selecting native Yandex TTS. Compatibility wrappers remain available. Raw XML SSML remains an explicit skill CLI/Python v1 operation because the ordinary host text cleaner is not a raw-XML route.
 
 
-## Scoped native enrollment
+## Stock Hermes configuration
 
-Run the helper in the intended active Hermes profile. It uses that profile's config and workspace, never another profile's credentials. Preview first, then explicitly apply the same enrollment:
+Use the standard Hermes plugin manager and configuration CLI in the intended profile. The complete Yandex Speech Python package and required gRPC dependencies must already be available in the configured Hermes environment. Replace COMMIT with the reviewed skill revision:
 
-```bash
-python /absolute/skill/scripts/speech_setup.py --hermes-plan
-python /absolute/skill/scripts/speech_setup.py --hermes-apply
-python /absolute/skill/scripts/speech_setup.py --check
+```sh
+hermes plugins install bizyumov/yandex-speech/integrations/hermes --ref COMMIT --no-enable
+hermes plugins enable yandex-speech
+hermes config set stt.provider yandex
+hermes config set stt.streaming true
+hermes config set stt.yandex.language ru-RU --force
 ```
 
-The preview shows selected non-secret changes and the plugin link without changing profile files. Native discovery is suppressed during metadata imports so a preview does not bootstrap SOUL.md or other workspace content. Apply requires the native expected-state configuration operation from the tested [Hermes source update](https://github.com/bizyumov/hermes-agent/pull/1); baseline 0.22.5 file-provider support remains separate. The preview reports safe_apply_available, and a host missing this safety operation refuses apply before filesystem mutation. Apply checks the expected raw configuration inside native shared write coordination, verifies the saved result and preserves unrelated values/comments. Plugin creation and rollback use verified directory descriptors, so a late parent redirect cannot write into another directory. A second equivalent apply is a no-op. The native plugin manifest is included beside its Python modules in the wheel as well as the installed skill projection, so enrollment works outside the source checkout.
+Review an existing same-name command provider and retain its preferences before removing it through the native CLI. Native plugin installation/admission and these ordinary key changes do not require a platform fork or an extended configuration writer. The legacy convenience enrollment helper is not the setup path for this stock integration; standalone readiness checks remain available.
 
-Recognized canonical Yandex commands migrate their literal voice/language/role/model choices into native defaults without executing those commands. Wrapper placeholders must match the complete positional contract. The known STT success-only cat of its exact transcript artifact is recognized, as are TTS adapter-voice/adapter-emotion flags; arbitrary shell suffixes and changed source paths are refused. The workspace user file retains priority. Unknown commands, opaque environment prefixes, unknown input placeholders, incompatible defaults, redirected plugin directories and different existing plugin installations fail before mutation. Configuration aliases crossing changed settings are refused because the native round-trip writer can otherwise update an unrelated alias; separate those aliases before enrollment. Existing wrappers remain installed.
+## Discord arriving-audio binding
 
-Streaming is enrolled only when explicitly selected and locally eligible:
+The current binding targets official unmodified Hermes0.23.0 at2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19. It registers a platform handler against the existing Discord client, observes the original receiver's decoded PCM and feeds the stock streaming factory. Its private receiver/callback dependencies are tied to that inspected host contract; another release requires verification.
 
-```bash
-python /absolute/skill/scripts/speech_setup.py --hermes-plan --enable-stt-streaming --enable-tts-pcm
-python /absolute/skill/scripts/speech_setup.py --hermes-apply --enable-stt-streaming --enable-tts-pcm
+Managed live mode requires an explicitly selected Yandex provider and stt.streaming enabled when the plugin loads. With that mode disabled, the existing file voice route remains active. Late attachment to a nonempty buffer rejects that utterance until a fresh boundary. Authorization, receiver identity, voice-channel identity and text binding are checked before upload and before delivery. Moves, teardown and untrusted generations are explicit failures.
+
+One ffmpeg converter per active source produces16kHz mono signed16-bit PCM. Plugin input and submitted-versus-inner-accepted budgets bound backlog. A healthy silence/EOF finishes the same recognition stream. The resulting genuine text is handed once to the unchanged, source-bound Native voice callback, retaining its canonicalization and authorization checks.
+
+The stock receiver still allocates a WAV after silence. In managed live mode the plugin defers ASR for that allocation, preventing a second recognition/callback; the allocation itself is not evidence of a switch to file recognition. Failed live captures do not silently replay through file ASR or select another provider. Normal attachments retain recorded recognition.
+
+[Issue43](https://github.com/bizyumov/yandex-speech/issues/43) defines the acceptance contract. Focused offline checks and a real-Yandex/local-UDP component test cover the receiver, progressive recognition, complete tail and lifecycle. The live Discord canary remains pending at this revision; the component test does not establish it or hour-long capture.
+
+```sh
+python -m unittest tests.test_discord_ingress
 ```
-
-The PCM selection is pinned to `tts.streaming.provider: yandex`; an existing different selection is otherwise retained. Native enrollment does not create keys, rewrite .env, install SDKs, copy another profile or restart a gateway. Local availability checks do not prove API execution, a loaded live gateway, actual source ingress, messenger delivery or channel playback. Real source/host activation remains a separate verified step. `--config` and `--probe-audio` belong to standalone checks and cannot be combined with native enrollment.
