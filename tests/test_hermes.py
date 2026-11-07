@@ -144,6 +144,198 @@ class HermesBindingTests(unittest.TestCase):
         self.assertEqual(result["transcript"],"")
         self.assertEqual(result["provider"],"yandex")
 
+    def test_live_push_failure_is_immediate_and_keeps_primary_cause(self):
+        from integrations.hermes.provider import YandexStreamSession
+        from unittest.mock import Mock
+        from yandex_speech.errors import SpeechError
+        core = Mock()
+        failure = SpeechError("RATE_LIMIT", "bounded stream queue is full", code="INPUT_QUEUE_FULL")
+        core.push_audio.side_effect = failure
+        core.cancel.side_effect = RuntimeError("private-token-fixture")
+        session = YandexStreamSession(core)
+        with self.assertRaises(SpeechError) as caught:
+            session.push_audio(bytes(640))
+        self.assertIs(caught.exception, failure)
+        with self.assertRaises(SpeechError) as repeated:
+            session.push_audio(bytes(640))
+        self.assertIs(repeated.exception, failure)
+        core.push_audio.assert_called_once()
+        session.cancel()
+        result = session.finalize()
+        self.assertFalse(result["success"])
+        self.assertIn("bounded stream queue is full", result["error"])
+        self.assertEqual(result["stream_failure"]["category"], "RATE_LIMIT")
+        self.assertEqual(result["stream_failure"]["code"], "INPUT_QUEUE_FULL")
+        self.assertTrue(result["stream_failure"]["cleanup_failed"])
+        self.assertNotIn("private-token-fixture", str(result))
+        self.assertIs(session.finalize(), result)
+        core.finalize.assert_not_called()
+
+    def test_async_stream_failure_surfaces_during_preview_before_source_eof(self):
+        from integrations.hermes.provider import YandexStreamSession
+        from unittest.mock import Mock
+        from yandex_speech.errors import SpeechError
+        core = Mock()
+        failure = SpeechError("PROVIDER", "stream transport failed", code="UNAVAILABLE")
+        core.partial_transcript.side_effect = failure
+        session = YandexStreamSession(core)
+        session.push_audio(bytes(640))
+        with self.assertRaises(SpeechError) as caught:
+            session.partial_transcript()
+        self.assertIs(caught.exception, failure)
+        result = session.finalize()
+        self.assertFalse(result["success"])
+        self.assertEqual(result["stream_failure"]["phase"], "preview")
+        self.assertEqual(result["stream_failure"]["code"], "UNAVAILABLE")
+        core.finalize.assert_not_called()
+
+    def test_unknown_stream_exception_is_safe_in_live_error_log_and_envelope(self):
+        import logging
+        from integrations.hermes.provider import YandexStreamSession
+        from unittest.mock import Mock
+        from yandex_speech.errors import SpeechError
+        core = Mock()
+        core.push_audio.side_effect = RuntimeError("private-token-fixture")
+        session = YandexStreamSession(core)
+        with self.assertLogs("integrations.hermes.provider", level=logging.WARNING) as logs:
+            with self.assertRaises(SpeechError) as caught:
+                session.push_audio(bytes(640))
+        result = session.finalize()
+        self.assertNotIn("private-token-fixture", str(caught.exception))
+        self.assertNotIn("private-token-fixture", str(result))
+        self.assertNotIn("private-token-fixture", str(logs.output))
+        self.assertEqual(result["stream_failure"]["category"], "PROVIDER")
+
+    def test_healthy_source_end_finalizes_same_core_without_cancellation(self):
+        from integrations.hermes.provider import YandexStreamSession
+        from unittest.mock import Mock
+        from yandex_speech.errors import SpeechError
+        core = Mock()
+        core.finalize.return_value = {"input_complete": True, "text": "complete control tail"}
+        session = YandexStreamSession(core)
+        session.push_audio(bytes(640))
+        result = session.finalize()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transcript"], "complete control tail")
+        self.assertIs(session.finalize(), result)
+        core.finalize.assert_called_once()
+        core.cancel.assert_not_called()
+        with self.assertRaises(SpeechError):
+            session.push_audio(bytes(640))
+        core.push_audio.assert_called_once()
+
+    def test_cancel_racing_native_finalize_prevents_success_commit(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from integrations.hermes.provider import YandexStreamSession
+        from unittest.mock import Mock
+        entered, release = threading.Event(), threading.Event()
+        core = Mock()
+        def completing():
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError("cancel did not release finalization")
+            return {"input_complete": True, "text": "late success"}
+        core.finalize.side_effect = completing
+        core.cancel.side_effect = release.set
+        session = YandexStreamSession(core)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(session.finalize)
+            self.assertTrue(entered.wait(2))
+            session.cancel()
+            result = future.result(2)
+        self.assertFalse(result["success"])
+        self.assertEqual(result["stream_failure"]["category"], "CANCELLED")
+
+    def test_real_core_cleanup_failure_preserves_provider_cause_in_all_live_paths(self):
+        from integrations.hermes.provider import YandexStreamSession
+        from tests.test_streaming import FakeStreamingRpc, native
+        from unittest.mock import Mock
+        from yandex_speech.errors import SpeechError
+        from yandex_speech.streaming import TranscriptionSession
+        rpc = FakeStreamingRpc()
+        original_close = rpc.close
+        rpc.close = Mock(side_effect=RuntimeError("private-cleanup-fixture"))
+        core = TranscriptionSession(rpc, audio_input=native())
+        primary = SpeechError("PROVIDER", "safe provider failure", code="UNAVAILABLE")
+        try:
+            core._fail(primary)
+            for worker in list(core.workers):
+                worker.join(2)
+                self.assertFalse(worker.is_alive())
+            result = YandexStreamSession(core).finalize()
+            self.assertEqual(result["stream_failure"]["category"], "PROVIDER")
+            self.assertEqual(result["stream_failure"]["code"], "UNAVAILABLE")
+            self.assertTrue(result["stream_failure"]["cleanup_failed"])
+            self.assertNotIn("private-cleanup-fixture", str(result))
+            for operation in ("push_audio", "partial_transcript"):
+                session = YandexStreamSession(core)
+                with self.subTest(operation=operation), self.assertRaises(SpeechError) as caught:
+                    if operation == "push_audio":
+                        session.push_audio(bytes(640))
+                    else:
+                        session.partial_transcript()
+                self.assertIs(caught.exception, primary)
+                self.assertEqual(session.finalize()["stream_failure"]["code"], "UNAVAILABLE")
+        finally:
+            rpc.close = original_close
+            core.cancel()
+
+    def test_later_cancel_does_not_hide_unobserved_core_provider_failure(self):
+        from integrations.hermes.provider import YandexStreamSession
+        from tests.test_streaming import FakeStreamingRpc, native
+        from yandex_speech.errors import SpeechError
+        from yandex_speech.streaming import TranscriptionSession
+        core = TranscriptionSession(FakeStreamingRpc(), audio_input=native())
+        self.addCleanup(core.cancel)
+        primary = SpeechError("PROVIDER", "safe provider failure", code="UNAVAILABLE")
+        core._fail(primary)
+        for worker in list(core.workers):
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+        session = YandexStreamSession(core)
+        session.cancel()
+        result = session.finalize()
+        self.assertEqual(result["stream_failure"]["category"], "PROVIDER")
+        self.assertEqual(result["stream_failure"]["code"], "UNAVAILABLE")
+        self.assertIs(core.failure, primary)
+
+    def test_cached_failure_updates_when_concurrent_cleanup_finishes(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from integrations.hermes.provider import YandexStreamSession
+        from tests.test_streaming import FakeStreamingRpc, native
+        from yandex_speech.streaming import TranscriptionSession
+        entered, release = threading.Event(), threading.Event()
+        rpc = FakeStreamingRpc()
+        original_close = rpc.close
+        def blocked_close():
+            entered.set()
+            if not release.wait(2):
+                raise RuntimeError("cleanup did not receive its release")
+            raise RuntimeError("private-cleanup-fixture")
+        rpc.close = blocked_close
+        core = TranscriptionSession(rpc, audio_input=native())
+        session = YandexStreamSession(core)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(session.cancel)
+                self.assertTrue(entered.wait(2))
+                result = session.finalize()
+                self.assertFalse(result["success"])
+                self.assertTrue(result["stream_failure"].get("cleanup_pending", False))
+                release.set()
+                pending.result(2)
+            self.assertTrue(core.cleanup_failed)
+            self.assertTrue(result["stream_failure"]["cleanup_failed"])
+            self.assertFalse(result["stream_failure"]["cleanup_pending"])
+            self.assertIs(session.finalize(), result)
+            self.assertNotIn("private-cleanup-fixture", str(result))
+        finally:
+            release.set()
+            rpc.close = original_close
+            core.cancel()
+
 class HermesTTSBindingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

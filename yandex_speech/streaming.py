@@ -111,6 +111,8 @@ class TranscriptionSession:
         self._source_hash = hashlib.sha256()
         self._tail = b""
         self._error = None
+        self._cleanup_error = None
+        self._cleanup_inflight = 0
         self._result = None
         self._started = False
         self._eou_sent = False
@@ -137,7 +139,7 @@ class TranscriptionSession:
                 self._error = error
             if self.state != "cancelled":
                 self.state = "failed"
-            start_cleanup = not self._failure_cleanup_started
+            start_cleanup = not self._failure_cleanup_started and not self._closed
             self._failure_cleanup_started = True
         self._stop.set()
         self._source.abort()
@@ -154,12 +156,47 @@ class TranscriptionSession:
         if start_cleanup:
             self._thread(self._cleanup_failure, "failure-cleanup")
 
+    @property
+    def failure(self):
+        """The first failed/cancelled outcome, read under session coordination."""
+        with self._state_lock:
+            return self._error
+
+    @property
+    def cleanup_failed(self):
+        with self._state_lock:
+            return self._cleanup_error is not None
+
+    @property
+    def cleanup_pending(self):
+        with self._state_lock:
+            return self._cleanup_inflight > 0
+
+    def _cleanup_recorded(self, deadline):
+        with self._state_lock:
+            self._cleanup_inflight += 1
+        try:
+            try:
+                return self._cleanup(deadline)
+            except Exception as error:
+                failure = error if isinstance(error, SpeechError) else SpeechError(
+                    "STATE", "owned stream cleanup failed")
+                with self._state_lock:
+                    if self._cleanup_error is None:
+                        self._cleanup_error = failure
+                    if self._error is None:
+                        self._error = failure
+                        self.state = "failed"
+                raise failure from None
+        finally:
+            with self._state_lock:
+                self._cleanup_inflight -= 1
+
     def _cleanup_failure(self):
         try:
-            self._cleanup(time.monotonic() + 2)
-        except SpeechError as error:
-            with self._state_lock:
-                self._error = error
+            self._cleanup_recorded(time.monotonic() + 2)
+        except SpeechError:
+            pass  # Primary and secondary outcomes were retained by _cleanup_recorded.
 
     def _raise_error(self):
         if self._error is not None:
@@ -197,6 +234,7 @@ class TranscriptionSession:
             raise SpeechError("CONFIG", "push_audio requires source bytes")
         data = bytes(source_bytes)
         with self._state_lock:
+            self._raise_error()
             if self.state not in {"open", "receiving"}:
                 raise SpeechError("STATE", "cannot feed a terminal or finalizing session")
             if time.monotonic() >= self._deadline_at:
@@ -222,7 +260,9 @@ class TranscriptionSession:
                 raise
 
     def partial_transcript(self):
-        return self._accumulator.preview if self.state in {"receiving", "finalizing"} else ""
+        with self._state_lock:
+            self._raise_error()
+            return self._accumulator.preview if self.state in {"receiving", "finalizing"} else ""
 
     def _write_source(self):
         try:
@@ -412,7 +452,7 @@ class TranscriptionSession:
                             raise SpeechError("OUTPUT_PARTIAL", "missing complete drain or matching EOU acknowledgement")
                         candidate = self._accumulator.result(
                             completion_kind="streamed-utterance", source_info=self._source_info())
-                self._cleanup(min(deadline, time.monotonic() + 2))
+                self._cleanup_recorded(min(deadline, time.monotonic() + 2))
                 with self._state_lock:
                     self._raise_error()
                     if time.monotonic() > deadline:
@@ -422,7 +462,10 @@ class TranscriptionSession:
                 return self._result
             except SpeechError as error:
                 self._fail(error)
-                self._cleanup(time.monotonic() + 2)
+                try:
+                    self._cleanup_recorded(time.monotonic() + 2)
+                except SpeechError:
+                    pass  # Preserve the primary outcome; cleanup failure remains separate.
                 self._raise_error()
             except BaseException:
                 self.cancel()
@@ -433,11 +476,11 @@ class TranscriptionSession:
         with self._state_lock:
             if self.state == "completed":
                 return
-            if self.state != "failed":
+            if self._error is None:
                 self.state = "cancelled"
                 self._error = SpeechError("CANCELLED", "local utterance cancelled")
         self._stop.set()
-        self._cleanup(deadline)
+        self._cleanup_recorded(deadline)
 
     def __enter__(self):
         return self

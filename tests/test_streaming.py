@@ -288,6 +288,18 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(result["input_complete"])
         self.assertEqual(rpc.calls, 0)
 
+    def test_async_provider_failure_keeps_its_cause_on_push_and_preview(self):
+        stream, rpc = self.session()
+        failure = SpeechError("PROVIDER", "stream peer refused the request", code="UNAVAILABLE")
+        stream._fail(failure)
+        with self.assertRaises(SpeechError) as pushed:
+            stream.push_audio(bytes(640))
+        self.assertIs(pushed.exception, failure)
+        with self.assertRaises(SpeechError) as previewed:
+            stream.partial_transcript()
+        self.assertIs(previewed.exception, failure)
+        self.assertEqual(rpc.calls, 0)
+
 class ProviderWordTimingTests(unittest.TestCase):
     def test_rejects_missing_defaulted_nonfinite_reversed_and_unbounded_word_times(self):
         from tests.provider.test_server_streaming_contract import assert_word_timing
