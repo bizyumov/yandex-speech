@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 
 from .errors import SpeechError
-from .recording_request import file_source
+from .recording_request import file_source, inline_size_error
 
 MAX_GRPC_BYTES = 60_000_000
 MAX_FILE_DURATION_MS = 14_400_000
@@ -51,7 +51,7 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
     _, p, *_ = sdk()
     source, metadata = file_source(audio, uri=uri, source_info=source_info,
         inline_limit=MAX_GRPC_BYTES, duration_limit=MAX_FILE_DURATION_MS,
-        storage_limit=MAX_STORAGE_BYTES, mono_required=diarize)
+        storage_limit=MAX_STORAGE_BYTES, mono_required=diarize, inline_wire_limit=MAX_GRPC_BYTES)
     model = _model(p, metadata["container"], metadata["sample_rate_hertz"], language=language,
                    diarize=diarize, literature_text=literature_text, channels=metadata["channels"])
     request = p.RecognizeFileRequest(**source, recognition_model=model,
@@ -59,8 +59,8 @@ def build_file_request(audio=None, *, language="ru-RU", diarize=False,
             speaker_labeling=p.SpeakerLabelingOptions.SPEAKER_LABELING_ENABLED if diarize else
             p.SpeakerLabelingOptions.SPEAKER_LABELING_DISABLED))
     if uri is None and request.ByteSize() > MAX_GRPC_BYTES:
-        raise SpeechError("LIMIT", f"serialized v3 protobuf is {request.ByteSize()} bytes; "
-                          f"limit is {MAX_GRPC_BYTES} bytes including its envelope")
+        raise inline_size_error(request.ByteSize(), MAX_GRPC_BYTES,
+                                representation="serialized v3 protobuf request", prepared_size=audio.size_bytes)
     return request
 
 

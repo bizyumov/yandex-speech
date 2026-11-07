@@ -81,6 +81,9 @@ class JobHandle:
             if path.is_symlink():
                 raise ValueError
             data = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("mode") == "async-partitioned":
+                from .partition_jobs import PartitionJob
+                return PartitionJob.load(path)
             if (data.get("schema_version") != 1 or data.get("api_version") not in {"2", "3"}
                     or data.get("transport") not in {"grpc", "rest"}
                     or data.get("api_version") == "2" and data.get("transport") != "rest"

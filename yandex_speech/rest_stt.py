@@ -11,7 +11,7 @@ import time
 import requests
 
 from .errors import SpeechError
-from .recording_request import file_source
+from .recording_request import file_source, inline_size_error
 
 MAX_REST_BYTES = 60_000_000
 MAX_EVENT_BYTES = 8_000_000
@@ -77,13 +77,15 @@ def build_rest_request(audio=None, *, uri=None, source_info=None, language="ru-R
         available = MAX_REST_BYTES - envelope
         if available < 0:
             raise SpeechError("LIMIT", "REST request metadata exceeds the complete JSON wire budget")
-        source, _ = file_source(audio, inline_limit=3 * (available // 4), mono_required=diarize)
+        source, _ = file_source(audio, inline_limit=3 * (available // 4), mono_required=diarize,
+                                inline_wire_limit=MAX_REST_BYTES)
         body["content"] = base64.b64encode(source["content"]).decode("ascii")
     else:
         body["uri"] = str(uri)
     wire = _encode(body)
     if len(wire) > MAX_REST_BYTES:
-        raise SpeechError("LIMIT", f"complete REST JSON is {len(wire)} bytes; limit is {MAX_REST_BYTES} bytes")
+        raise inline_size_error(len(wire), MAX_REST_BYTES, representation="complete REST JSON request",
+                                prepared_size=audio.size_bytes if audio is not None else None)
     return wire
 
 

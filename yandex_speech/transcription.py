@@ -195,7 +195,22 @@ class SpeechTranscriber:
                             timestamps=None, literature_text=None, api_version=None,
                             transport=None, bucket=None, endpoint=None, prefix=None,
                             use_storage=None, deadline_seconds=1800,
+                            split_inline=False, allow_partitioned_speakers=False,
                             _on_prepared=None, _on_accepted=None):
+        if type(split_inline) is not bool or type(allow_partitioned_speakers) is not bool:
+            raise SpeechError("CONFIG", "partition options must be booleans")
+        if split_inline:
+            if source_info is not None:
+                raise SpeechError("CONFIG", "inline partitioning probes the addressed local source")
+            from .recording_partitions import start_partitioned
+            return start_partitioned(self, source, audio_input=audio_input, audio_track=audio_track,
+                language_code=language_code, diarize=diarize, timestamps=timestamps, literature_text=literature_text,
+                api_version=api_version, transport=transport, bucket=bucket, endpoint=endpoint, prefix=prefix,
+                use_storage=use_storage, deadline_seconds=deadline_seconds,
+                allow_partitioned_speakers=allow_partitioned_speakers,
+                _on_prepared=_on_prepared, _on_accepted=_on_accepted)
+        if allow_partitioned_speakers:
+            raise SpeechError("CONFIG", "partition-local speakers require explicit inline partitioning")
         settings = self._options(language_code=language_code, diarize=diarize, timestamps=timestamps,
             literature_text=literature_text, api_version=api_version, transport=transport)
         version = settings.value("api_version")
@@ -334,6 +349,10 @@ class SpeechTranscriber:
             raise SpeechError("CONFIG", "provide a job handle, receipt Path or operation ID")
         if api_version not in (None, "auto") and str(api_version) != job.api_version:
             raise SpeechError("CONFIG", "explicit recovery version conflicts with the saved job")
+        if job.data.get("mode") == "async-partitioned":
+            from .recording_partitions import poll_partitioned
+            return poll_partitioned(self, job, deadline_seconds=deadline_seconds, transport=transport,
+                                    progress=progress, poll_interval=poll_interval)
         if job.status == "submission_uncertain" or not job.operation_id:
             raise SpeechError("SUBMISSION_UNCERTAIN", "receipt has no accepted operation ID; do not resubmit it automatically",
                               receipt_path=str(job.manifest_path))
@@ -495,8 +514,23 @@ class SpeechTranscriber:
         return self.poll_until_complete(job, poll_interval=interval)
 
     def transcribe_auto(self, path, **options):
+        split = options.pop("split_inline", False)
+        if type(split) is not bool:
+            raise SpeechError("CONFIG", "split_inline must be a boolean")
+        if split:
+            options.pop("_require_job", None)
+            interval = options.pop("poll_interval", 1.0)
+            if type(interval) not in (int, float) or not math.isfinite(interval) or not 0 < interval <= 120:
+                raise SpeechError("CONFIG", "poll interval must be in (0, 120] seconds")
+            job = self.start_transcription(path, split_inline=True, **options)
+            return self.poll_until_complete(job, poll_interval=interval)
         from .recording_routes import transcribe_recording
         return transcribe_recording(self, path, options)
+
+    def resume_partitioned_transcription(self, job_or_path, *, api_version=None, deadline_seconds=1800):
+        """Continue only never-sent parts; accepted children retain their operation IDs."""
+        from .recording_partitions import resume_partitioned
+        return resume_partitioned(self, job_or_path, api_version=api_version, deadline_seconds=deadline_seconds)
 
     def open_stream(self, *, audio_input=None, language_code=None, diarize=None,
                     timestamps=None, literature_text=None, api_version=None,
