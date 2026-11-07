@@ -200,3 +200,13 @@ class RestSttTests(unittest.TestCase):
                 transport = RestTransport("synthetic", _session=Session(Response(operation)))
                 with self.assertRaises(RestRequestError):
                     transport.get_operation("accepted-id", 1)
+
+    def test_duplicate_gateway_fields_are_not_silently_overwritten(self):
+        from yandex_speech.rest_stt import RestRequestError, RestTransport
+        wire = b'{"result":{"final":{"alternatives":[{"text":"first","text":"second"}]}}}\n'
+        transport = RestTransport("synthetic", _session=Session(Response(wire)))
+        with self.assertRaises(RestRequestError):
+            list(transport.get_recognition("accepted-id", 1))
+        transport = RestTransport("synthetic", _session=Session(Response(b'{"id":"first","id":"second"}')))
+        with self.assertRaises(RestRequestError):
+            transport.recognize_file(b"{}", 1)

@@ -232,12 +232,16 @@ class RestRecordingTests(unittest.TestCase):
             event = copy.deepcopy(valid)
             event["channelTag"] = channel
             cases.append(event)
+        collision = copy.deepcopy(valid)
+        collision["final"]["alternatives"][0]["words"][0]["start_time_ms"] = 100.5
+        cases.append(collision)
         cases.extend(({"eouUpdate": {"timeMs": "not-a-time"}},
+                      {"eou_update": {"time_ms": "not-a-time"}},
                       {"eouUpdate": {"timeMs": False}},
                       {"final": {"alternatives": "not-a-list"}}))
         for event in cases:
             with self.subTest(event=event):
-                frames = (valid, event) if "eouUpdate" in event else (event,)
+                frames = (valid, event) if "eouUpdate" in event or "eou_update" in event else (event,)
                 wire = b"\n".join(json.dumps({"result": frame}).encode() for frame in frames)
                 session = Session(Response({"id": "accepted-malformed"}), Response({"done": True}), Response(wire))
                 client = self.client(session)

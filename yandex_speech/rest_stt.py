@@ -98,6 +98,14 @@ class RestRequestError(Exception):
     def trailing_metadata(self):
         return [("x-request-id", self._request_id)] if self._request_id else []
 
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise RestRequestError("DATA_LOSS")
+        result[key] = value
+    return result
+
 
 class _ExactAuth(requests.auth.AuthBase):
     def __init__(self, api_key):
@@ -116,8 +124,17 @@ def _operation_id(value):
 
 def _snake(value):
     if isinstance(value, dict):
-        return {re.sub(r"[A-Z]", lambda match: "_" + match.group().lower(), key): _snake(item)
-                for key, item in value.items()}
+        normalized = {}
+        for key, item in value.items():
+            # REST gateway fields use camelCase. Internal snake_case aliases
+            # must not bypass validation or shadow a documented wire field.
+            if not isinstance(key, str) or "_" in key:
+                raise RestRequestError("DATA_LOSS")
+            name = re.sub(r"[A-Z]", lambda match: "_" + match.group().lower(), key)
+            if name in normalized:
+                raise RestRequestError("DATA_LOSS")
+            normalized[name] = _snake(item)
+        return normalized
     if isinstance(value, list):
         return [_snake(item) for item in value]
     return value
@@ -188,7 +205,7 @@ def _validate_event(event):
 
 def _event(line):
     try:
-        frame = json.loads(line)
+        frame = json.loads(line, object_pairs_hook=_unique_object)
     except (ValueError, UnicodeError):
         raise RestRequestError("DATA_LOSS") from None
     if not isinstance(frame, dict):
@@ -280,7 +297,7 @@ class RestTransport:
         try:
             raw = b"".join(self._chunks(response, deadline, limit=64_000_000))
             try:
-                document = json.loads(raw)
+                document = json.loads(raw, object_pairs_hook=_unique_object)
             except (ValueError, UnicodeError):
                 raise RestRequestError("DATA_LOSS") from None
             if not isinstance(document, dict):
