@@ -31,6 +31,10 @@ class LiveOwnedStorageTests(unittest.TestCase):
         bucket = os.environ.get("YANDEX_SPEECH_TEST_STORAGE_BUCKET")
         profile = os.environ.get("YANDEX_SPEECH_TEST_MANAGEMENT_PROFILE")
         key = os.environ.get("YANDEX_SPEECH_API_KEY")
+        version = os.environ.get("YANDEX_SPEECH_TEST_STORAGE_API_VERSION", "3")
+        transport = os.environ.get("YANDEX_SPEECH_TEST_STORAGE_TRANSPORT", "auto")
+        self.assertIn(version, {"2", "3"})
+        self.assertIn(transport, {"auto", "grpc", "rest"})
         self.assertTrue(bucket and profile and key,
                         "select existing authorized storage bucket/management profile and speech key")
         environment = {name: os.environ[name] for name in ("HOME", "PATH", "LANG", "XDG_CONFIG_HOME")
@@ -70,7 +74,7 @@ class LiveOwnedStorageTests(unittest.TestCase):
         source = fixture_dir() / "single.wav"
         original = hashlib.sha256(source.read_bytes()).hexdigest()
         with self.assertRaises(SpeechError) as uncertain:
-            uploader.upload(source, deadline_seconds=120)
+            uploader.upload(source, api_version=version, deadline_seconds=120)
         self.assertEqual(uncertain.exception.code, "UPLOAD_UNCERTAIN")
         receipt_path = Path(uncertain.exception.as_dict()["receipt_path"])
         self.assertEqual(UploadReceipt.load(receipt_path).status, "upload_uncertain")
@@ -106,7 +110,8 @@ class LiveOwnedStorageTests(unittest.TestCase):
                                 for g in shared.get("Grants", [])))
         recognizer = SpeechTranscriber(api_key=key, job_dir=root / "jobs",
                                        _context=RuntimeContext(user_home=root))
-        job = recognizer.start_transcription(receipt, timestamps=True, deadline_seconds=120)
+        job = recognizer.start_transcription(receipt, api_version=version, transport=transport,
+                                             timestamps=True, deadline_seconds=120)
         result = recognizer.poll_until_complete(job, deadline_seconds=120)
         self.assertTrue(result["input_complete"])
         self.assertIn("контрольный хвост", result["text"].casefold())
@@ -125,6 +130,7 @@ class LiveOwnedStorageTests(unittest.TestCase):
         report = {"case": self.id(), "source": "reviewed synthetic voice fixture",
                   "conditional_collision_preserved": True, "lost_reply_recovered_without_put_retry": True,
                   "recognizer_private_read": "execution-verified", "upload_bytes": receipt.size_bytes,
+                  "api_version": result["api_version"], "transport": result["transport"],
                   "job_manifest": str(job.manifest_path), "upload_manifest": str(receipt.manifest_path),
                   "cleanup": cleanup, "source_unchanged": True,
                   "new_test_object_read_acl": bool(reader), "bucket_or_iam_changes": False,

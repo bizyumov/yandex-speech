@@ -20,7 +20,7 @@ STATUSES = {"prepared", "submitting", "running", "results_ready", "completed",
 
 class JobHandle:
     def __init__(self, manifest_path, data, *, deadline_at=None):
-        self.manifest_path = Path(manifest_path)
+        self.manifest_path = Path(manifest_path).expanduser().absolute()
         self.data = data
         self.deadline_at = deadline_at
         self.cancel_event = threading.Event()
@@ -57,15 +57,18 @@ class JobHandle:
         self.save()
 
     @classmethod
-    def create(cls, base, source_info, *, parameters, deadline_at=None):
+    def create(cls, base, source_info, *, parameters, deadline_at=None, api_version="3", transport="grpc"):
+        version = str(api_version)
+        if version not in {"2", "3"} or transport not in {"grpc", "rest"} or version == "2" and transport != "rest":
+            raise SpeechError("CONFIG", "unsupported recorded job version or transport")
         directory = private_job_dir(Path(base))
-        data = {"schema_version": 1, "job_id": directory.name, "api_version": "3",
-                "transport": "grpc", "mode": "async", "status": "prepared",
-                "source_info": copy.deepcopy(source_info), "parameters": parameters,
+        data = {"schema_version": 1, "job_id": directory.name, "api_version": version,
+                "transport": transport, "mode": "async", "status": "prepared",
+                "source_info": copy.deepcopy(source_info), "parameters": copy.deepcopy(parameters),
                 "source_ref": source_info.get("uri") or source_info.get("original_path"),
                 "parts": [{"part_id": "0", "offset": 0.0,
                            "duration_ms": source_info.get("duration_ms"),
-                           "api_version": "3", "operation_id": None, "status": "prepared"}],
+                           "api_version": version, "operation_id": None, "status": "prepared"}],
                 "operation_ids": [], "owned_uploads": []}
         job = cls(directory / "job.json", data, deadline_at=deadline_at)
         job.save()
@@ -78,7 +81,9 @@ class JobHandle:
             if path.is_symlink():
                 raise ValueError
             data = json.loads(path.read_text(encoding="utf-8"))
-            if (data.get("schema_version") != 1 or data.get("api_version") != "3"
+            if (data.get("schema_version") != 1 or data.get("api_version") not in {"2", "3"}
+                    or data.get("transport") not in {"grpc", "rest"}
+                    or data.get("api_version") == "2" and data.get("transport") != "rest"
                     or data.get("status") not in STATUSES or path.name != "job.json"
                     or not re.fullmatch(r"[a-f0-9]{32}", data.get("job_id", ""))
                     or path.parent.name != data["job_id"]

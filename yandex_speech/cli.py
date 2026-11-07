@@ -49,7 +49,7 @@ def build_parser():
     parser.add_argument("--sample-rate",type=int)
     parser.add_argument("--channels",type=int)
     parser.add_argument("--stream",action="store_true")
-    parser.add_argument("--bucket",help="Explicit legacy async-s3 bucket; never creates a bucket")
+    parser.add_argument("--bucket",help="Existing authorized Object Storage bucket for API v2/v3; never creates one")
     return parser
 
 
@@ -87,8 +87,6 @@ def transcribe_main(argv=None):
         _preflight_output(args.output,args.overwrite)
         recovering=args.resume is not None or args.operation_id is not None
         if recovering:
-            if args.transport == "rest":
-                raise SpeechError("CONFIG","REST recovery is Phase 2; Phase 1 recovery uses the saved gRPC v3 job")
             if (args.mode is not None or args.language_code is not None or args.diarize is not None
                     or args.timestamps is not None or args.literature_text is not None
                     or args.audio_track is not None or args.audio_format != "auto"
@@ -103,7 +101,11 @@ def transcribe_main(argv=None):
             adapter["object_storage"]={"bucket":args.bucket}
         settings=resolve_settings(_context=context,_adapter=adapter)
         effective_version=args.api_version or settings.value("api_version")
-        new_recording=args.input is not None and not args.stream and args.mode in {None,"auto","async"} and effective_version not in {"1","2"}
+        if args.mode == "async-s3":
+            if effective_version not in {"auto", "2"}:
+                raise SpeechError("CONFIG", "async-s3 is explicit API v2; selected version conflicts")
+            effective_version = "2"
+        new_recording=args.input is not None and not args.stream and args.mode in {None,"auto","async","async-s3"} and effective_version != "1"
         if new_recording and args.job_file is None:
             args.job_file=args.output.with_suffix(".job.json")
         if args.job_file is not None:
@@ -112,8 +114,8 @@ def transcribe_main(argv=None):
             _preflight_output(args.job_file,False)
             if args.job_file.resolve() == args.output.resolve():
                 raise SpeechError("CONFIG","job and transcript paths must differ")
-        if args.bucket is not None and args.mode != "async-s3" and not(effective_version == "2" and args.mode in {None,"auto"}):
-            raise SpeechError("CONFIG","--bucket requires legacy async-s3 in Phase 1; REST v3 uploads are Phase 2")
+        if args.bucket is not None and not new_recording:
+            raise SpeechError("CONFIG", "--bucket requires an asynchronous recorded API v2/v3 operation")
         if args.input and args.input != "-" and args.output.resolve() == Path(args.input).resolve():
             raise SpeechError("CONFIG","the output must not replace the addressed source")
         
@@ -124,12 +126,10 @@ def transcribe_main(argv=None):
         client=SpeechTranscriber(_context=context,_adapter_defaults=adapter)
         options={"language_code":args.language_code,"diarize":args.diarize,
                  "timestamps":args.timestamps,"literature_text":args.literature_text,
-                 "api_version":args.api_version,"transport":args.transport}
+                 "api_version":effective_version if args.mode == "async-s3" else args.api_version,"transport":args.transport}
         if fmt in {"srt","vtt"} and args.timestamps is None:
             options["timestamps"]=True
         if args.resume or args.operation_id:
-            if args.api_version == "2":
-                raise SpeechError("PREREQUISITE","v2 job recovery is Phase 2; Phase 1 recovers saved v3 jobs")
             result=client.poll_until_complete(_resume_path(args.resume) if args.resume else args.operation_id,
                 api_version=args.api_version,transport=args.transport,deadline_seconds=args.deadline_seconds)
         elif args.stream:
@@ -141,11 +141,10 @@ def transcribe_main(argv=None):
                         _,rate,channels,width=descriptor.raw_values()
                         time.sleep(len(data)/(rate*channels*width))
                 result=stream.finalize()
-        elif args.mode in {"direct","direct-chunked","async-s3"} or effective_version in {"1","2"} and args.mode in {None,"auto"}:
+        elif args.mode in {"direct","direct-chunked"} or effective_version == "1" and args.mode in {None,"auto"}:
             if args.job_file:
-                raise SpeechError("CONFIG","durable job receipts require the v3 recorded method in Phase 1")
-            method={"direct":"transcribe_direct","direct-chunked":"transcribe_chunked_direct",
-                    "async-s3":"transcribe_async_s3"}.get(args.mode,"transcribe_auto")
+                raise SpeechError("CONFIG", "durable job receipts require an asynchronous recorded method")
+            method={"direct":"transcribe_direct","direct-chunked":"transcribe_chunked_direct"}.get(args.mode,"transcribe_auto")
             result=getattr(client,method)(Path(args.input),
                 audio_input=AudioInputSpec(args.audio_format,args.sample_format,args.sample_rate,args.channels),
                 audio_track=args.audio_track,deadline_seconds=args.deadline_seconds,
@@ -153,7 +152,8 @@ def transcribe_main(argv=None):
         else:
             descriptor=AudioInputSpec(args.audio_format,args.sample_format,args.sample_rate,args.channels)
             job=client.start_transcription(Path(args.input),audio_input=descriptor,
-                audio_track=args.audio_track,deadline_seconds=args.deadline_seconds,**options)
+                audio_track=args.audio_track,bucket=args.bucket,
+                deadline_seconds=args.deadline_seconds,**options)
             if args.job_file:
                 atomic_write(args.job_file,json.dumps({"kind":"yandex-speech-job-pointer",
                     "manifest_path":str(job.manifest_path)}).encode())
@@ -171,6 +171,8 @@ def transcribe_main(argv=None):
         return 0
     except SpeechError as error:
         print(str(error),file=sys.stderr)
+        if error.receipt_path:
+            print(f"Recovery receipt: {error.receipt_path}", file=sys.stderr)
         return exit_code(error.category)
     except (OSError,ValueError):
         print("INPUT_OUTPUT: cannot read selected input or publish output",file=sys.stderr)

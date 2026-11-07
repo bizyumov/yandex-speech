@@ -63,6 +63,34 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["effective_route"]["transport"],"rest")
         self.assertTrue(report["effective_route"]["available"])
 
+    def test_missing_optional_grpc_selects_rest_recording_without_claiming_live_access(self):
+        with patch("yandex_speech.readiness._available", side_effect=lambda module: module == "requests"):
+            report = self.check(_environment={"YANDEX_SPEECH_API_KEY": "synthetic"})
+        self.assertEqual(report["effective_route"]["transport"], "rest")
+        self.assertTrue(report["effective_route"]["available"])
+        self.assertTrue(report["effective_route"]["inputs"]["inline"])
+        self.assertTrue(report["effective_route"]["inputs"]["caller_uri"])
+        self.assertFalse(report["effective_route"]["inputs"]["helper_upload"])
+        self.assertFalse(report["effective_route"]["streaming_available"])
+        self.assertEqual(report["permissions"]["status"], "unverified")
+
+    def test_rest_uri_readiness_does_not_require_boto_or_upload_credentials(self):
+        from yandex_speech.readiness import check
+        for version in ("2", "3"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                path = root / ".config/yandex-speech/config.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(json.dumps({"speech": {"api_version": version, "transport": "rest",
+                    "object_storage": {"bucket": "configured-private"}}}))
+                with patch("yandex_speech.readiness._available", side_effect=lambda module: module == "requests"):
+                    report = check(_context=RuntimeContext(user_home=root), _environment={})
+                self.assertTrue(report["effective_route"]["available"])
+                self.assertTrue(report["effective_route"]["inputs"]["caller_uri"])
+                self.assertEqual(report["effective_route"]["inputs"]["inline"], version == "3")
+                self.assertFalse(report["effective_route"]["inputs"]["helper_upload"])
+                self.assertFalse(report["effective_route"]["streaming_available"])
+
     def test_helper_runs_outside_project_without_key(self):
         script = Path("scripts/speech_setup.py").resolve()
         with tempfile.TemporaryDirectory() as home:

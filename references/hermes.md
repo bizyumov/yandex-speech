@@ -2,7 +2,7 @@
 
 The optional native plugin lives at integrations/hermes and registers both a TranscriptionProvider and a TTSProvider named yandex. The skill remains the installed discovery entry; the plugin adds a host binding. No productive profile is modified by import/tests.
 
-For an authorized profile, link its plugin directory entry named yandex-speech to the installed skill's integrations/hermes directory, then enable that plugin through Hermes's normal plugin configuration. Ensure the standard Hermes environment can import the skill and its optional gRPC dependencies. Verify the plugin is loaded in that exact profile before changing its selected STT provider. Example profile settings:
+For an authorized profile, link its plugin directory entry named yandex-speech to the installed skill's integrations/hermes directory, then enable that plugin through Hermes's normal plugin configuration. Ensure the standard Hermes environment can import the skill and its base dependencies; gRPC is needed for arriving recognition or an explicit gRPC file selection. Verify the plugin is loaded in that exact profile before changing its selected STT provider. Example profile settings:
 
 ```yaml
 stt:
@@ -14,7 +14,7 @@ stt:
 
 The adapter binds .config/yandex-speech/config.json to the registered active workspace. User-file values override profile stt.yandex values and host language hints. The secret resolver must match that same profile; a foreign/missing scope fails closed. Do not edit global HOME to switch profiles. Required real methods are is_available(), transcribe(), streaming_capable and open_stream_session(); session push_audio/partial_transcript/finalize adapt the core completion contract to success/transcript/provider/error envelopes. A partial is never a completed ordinary input. The native finalize error envelope does not raise even when cleanup fails.
 
-A same-name stt.providers.yandex entry with type: command takes precedence in Hermes; remove/reconcile that entry before native streaming selection. Registration diagnoses this conflict. File availability remains distinct from streaming eligibility. A profile declining/missing gRPC can use the existing REST file option when its text/metadata requirements fit; it is not eligible for arriving recognition. Automatic true-literary requests are not silently degraded to raw v1 text.
+A same-name stt.providers.yandex entry with type: command takes precedence in Hermes; remove/reconcile that entry before native streaming selection. Registration diagnoses this conflict. File availability remains distinct from streaming eligibility. Native file calls use the common versioned recording API: REST v3 preserves timing/labeling when gRPC is unavailable or REST is explicit; fixed v2 uses its timing-only storage method. These file routes are not arriving recognition. Automatic true-literary requests are not silently degraded to raw v1 text. Storage defaults and separate upload keys resolve only from the owning profile's secret scope, below its user-file preferences; another profile's ambient S3 environment is excluded.
 
 The host's tools.transcription_streaming.open_streaming_session consumes stt.streaming: true. That setting selects eligible provider streaming only on host surfaces which actually feed arriving audio. Complete attachment input remains recorded recognition. Full platform capture, turn controls, wake/stop words, interruption propagation and progressive reply/playback are Phase 4; native STT alone does not complete voice chatting.
 

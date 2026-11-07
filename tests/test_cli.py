@@ -78,10 +78,10 @@ class CliTests(unittest.TestCase):
                             result=transcribe_main(["audio.wav","--output",str(root/(category+".txt"))])
                     self.assertEqual(result,expected)
 
-    def test_explicit_rest_recovery_and_new_submission_flags_are_rejected(self):
+    def test_recovery_rejects_new_submission_flags(self):
         from yandex_speech.cli import transcribe_main
         import contextlib,io
-        for extra in [["--transport","rest"],["--mode","async"],["--diarize"],
+        for extra in [["--mode","async"],["--diarize"],
                       ["--lang","ru-RU"],["--literature-text"]]:
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
                 with patch("yandex_speech.cli.SpeechTranscriber") as cls:
@@ -90,3 +90,43 @@ class CliTests(unittest.TestCase):
                                              "--output",str(Path(directory)/"out.txt"),*extra])
                     self.assertEqual(code,2)
                     cls.assert_not_called()
+
+    def test_rest_v2_and_v3_recovery_reach_core_without_new_submission(self):
+        import contextlib, io
+        from yandex_speech.cli import transcribe_main
+        for version in ("2", "3"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                with patch("yandex_speech.cli.SpeechTranscriber") as cls:
+                    cls.return_value.poll_until_complete.return_value = {
+                        "schema_version": 1, "text": "Recovered.", "segments": [],
+                        "status": "completed", "input_complete": True, "uncertainties": []}
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = transcribe_main(["--operation-id", "existing", "--api-version", version,
+                            "--transport", "rest", "--output", str(Path(directory) / "out.txt"), "--format", "txt"])
+                    self.assertEqual(code, 0)
+                    cls.return_value.poll_until_complete.assert_called_once_with("existing",
+                        api_version=version, transport="rest", deadline_seconds=1800)
+                    cls.return_value.start_transcription.assert_not_called()
+
+    def test_async_rest_bucket_and_v2_requests_publish_recoverable_jobs(self):
+        import contextlib, io
+        from yandex_speech.cli import transcribe_main
+        for version in ("2", "3"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with patch("yandex_speech.cli.SpeechTranscriber") as cls:
+                    cls.return_value.start_transcription.return_value.manifest_path = root / "private/job.json"
+                    cls.return_value.poll_until_complete.return_value = {
+                        "text": "Completed.", "segments": [], "status": "completed",
+                        "input_complete": True, "uncertainties": []}
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        code = transcribe_main([str(root / "source.wav"), "--mode", "async",
+                            "--api-version", version, "--transport", "rest", "--bucket", "explicit-private",
+                            "--output", str(root / "out.txt"), "--format", "txt"])
+                    self.assertEqual(code, 0)
+                    options = cls.return_value.start_transcription.call_args.kwargs
+                    self.assertEqual(options["api_version"], version)
+                    self.assertEqual(options["transport"], "rest")
+                    self.assertEqual(options["bucket"], "explicit-private")
+                    pointer = json.loads((root / "out.job.json").read_text())
+                    self.assertEqual(pointer["manifest_path"], str(root / "private/job.json"))
