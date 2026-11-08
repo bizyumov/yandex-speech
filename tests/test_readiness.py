@@ -23,6 +23,12 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("ai.speechkit-stt.user", json.dumps(report))
         self.assertIn("yc.ai.speechkitStt.execute", json.dumps(report))
 
+    def test_ready_options_describe_delivered_partitions_and_account_setup(self):
+        report = self.check(_environment={})
+        option = next(x for x in report["options"] if x["route"] == "over-limit async partitioning")
+        self.assertEqual(option["status"], "implemented")
+        self.assertIn("prepare-key", report["permissions"]["remedy"])
+
     def test_key_presence_never_claims_permission_or_leaks_secret(self):
         report = self.check(_environment={"YANDEX_SPEECH_API_KEY": "sentinel-secret-783"})
         text = json.dumps(report)

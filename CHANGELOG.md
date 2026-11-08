@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Add explicit read-only account/key inspection and setup planning, plus scoped API/static-key creation into exclusive protected files; keep grant/expiry evidence separate from actual method execution and never retry uncertain creation. Correct readiness to report delivered recording partition support.
+
 - Add explicit v3 inline recording partitions with exact full-wire admission, complete sample coverage, durable parent/child recovery without rebilling accepted audio, timed overlap reconciliation and visible partition-local speaker identities; make size-limit errors actionable through storage/split CLI commands.
 
 - Surface native streaming failures during audio feeding or preview; preserve the first safe cause through cleanup/cancellation, keep finalization nonraising and prevent cancellation races from committing success.
