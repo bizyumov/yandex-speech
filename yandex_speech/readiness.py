@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from .config import RuntimeContext, resolve_settings
@@ -49,7 +50,7 @@ def check(*, _context=None, _environment=None, _probe=None):
             "stt_scope": "yc.ai.speechkitStt.execute",
             "tts_role": "ai.speechkit-tts.user",
             "tts_scope": "yc.ai.speechkitTts.execute",
-            "remedy": "Ask the service-account owner to verify roles on the resource and the API key execution scopes. Supply the authorized service account to the agent for setup planning; key creation helpers are Phase 2.",
+            "remedy": "Ask the service-account owner to verify roles on the resource and the API key execution scopes. Use inspect-account and prepare-key with the authorized service-account ID and named management credential. Only explicit create-key creates a scoped key in a new protected file.",
         },
         "config_file": str(settings.path),
         "effective": settings.speech,
@@ -71,7 +72,7 @@ def check(*, _context=None, _environment=None, _probe=None):
             {"route": "REST v2 + S3", "status": "implemented", "tradeoff": "Explicit versioned timing/recovery without native speaker labels; existing readable URI needs no upload SDK."},
             {"route": "REST v1 direct/split", "status": "implemented", "tradeoff": "Explicit raw-text alternative without genuine word timing or speaker labels."},
             {"route": "automatic recording fallback", "status": "implemented", "tradeoff": "Local-only gRPC/REST changes and eligible raw-text v1 windows; accepted/uncertain work is never resubmitted."},
-            {"route": "over-limit async partitioning", "status": "pending", "tradeoff": "Oversized async sources still require explicit compatible recovery; no cross-job speaker identity is promised."},
+            {"route": "over-limit async partitioning", "status": "implemented", "tradeoff": "Explicit compatible inline partitions retain complete samples and durable recovery; speaker labels remain partition-local."},
         ],
     }
     if _probe is not None and key_present:
@@ -90,7 +91,13 @@ def check(*, _context=None, _environment=None, _probe=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in {"inspect-account", "prepare-key", "create-key"}:
+        from .cloud_setup import main as setup_main
+        return setup_main(argv)
+    if argv[:1] == ["check"]:
+        argv = argv[1:]
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Account setup: inspect-account, prepare-key or create-key --help. Hermes configuration uses the native CLI.")
     parser.add_argument("--check", action="store_true", help="Check prerequisites without changing configuration")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--probe-audio", type=Path, help="Explicitly submit this synthetic recording; incurs API usage")

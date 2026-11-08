@@ -19,50 +19,42 @@ For more info on hermes voice support: https://www.youtube.com/watch?v=fVAnKu_9Z
 
 # Yandex Speech
 
-An agent skill for Yandex SpeechKit. This branch implements development Phase 1: the skill baseline, gRPC v3 speech transcription and a native Hermes 0.22.5 STT binding. VERSION is 0.1.0; no public release/tag is implied. Read [SKILL.md](SKILL.md) for the agent workflow.
+An agent skill for transcribing uploaded audio/video, generating speech and connecting Yandex SpeechKit to stock Hermes 0.23.0. Root [SKILL.md](SKILL.md) is the skill entry. Existing Discord conversation is included; live meeting recording and its start/stop controls are deferred to the next release.
 
-| User scenario | Capability used | Implemented baseline |
-|---|---|---|
-| push-to-talk messaging | speech-transcription; spoken-turn-handling | Recorded attachment recognition and native STT binding. Complete addressed conversation integration is Phase 4. |
-| receive voice reply | speech-synthesis; spoken-turn-handling | Current worktree adds v1/v3 complete files, LiveTTS, SSML and incremental gRPC PCM. Standard Hermes tool binding is exercised; complete playback integration remains separate. |
-| transcribing audio records | speech-transcription | gRPC v3 recording jobs, recovery, any locally decodable media, genuine timing, two anonymous speakers, TXT/JSON/SRT/VTT. |
-| voice chatting | speech-transcription; speech-synthesis; spoken-turn-handling | Recognition while audio arrives and native Hermes STT. Complete capture → agent → progressive reply → playback is Phase 4. |
+## Start here
 
-## Use
+Use the configured standard Hermes environment and plain `python`. The runtime owner installs the declared base requirements and, when needed, the optional gRPC/storage profiles. The skill never installs dependencies automatically. FFmpeg/ffprobe handle media preparation; no project-specific virtual environment is needed.
 
-Keep the checkout in the platform's configured skills directory so its root SKILL.md is discovered. Set `YANDEX_SPEECH_API_KEY` through the runtime's secret mechanism. The key belongs to a service account; a folder ID is optional legacy configuration and is not sent with these calls.
+Set `YANDEX_SPEECH_API_KEY` through the owning runtime's secret mechanism. Keep credentials out of chat, command arguments and configuration JSON.
 
-Inside Hermes, development, execution and tests use plain `python` from the configured `VIRTUAL_ENV` and `PATH`. Never hardcode or prepend a venv path. Have the runtime administrator admit the dependencies declared by `requirements.txt` and optional `requirements-grpc.txt` into that environment; do not create a project venv. The skill never installs dependencies implicitly. FFmpeg and ffprobe are required for media probing/conversion; native described PCM streams need neither.
-
-```bash
+```sh
 python /absolute/skill/scripts/speech_setup.py --check
-python /absolute/skill/scripts/transcribe.py ./meeting.mp3 --mode async --diarize --timestamps --format srt --output ./out/meeting.srt
-python /absolute/skill/scripts/transcribe.py --resume ./out/meeting.job.json --format json --output ./out/meeting.json
-python /absolute/skill/scripts/tts.py "Привет, мир" --format oggopus --output ./out/reply.ogg
+python /absolute/skill/scripts/transcribe.py ./recording.mp3 --mode async --diarize --timestamps --format srt --output ./out/recording.srt
+python /absolute/skill/scripts/transcribe.py --resume ./out/recording.job.json --format json --output ./out/recording.json
+python /absolute/skill/scripts/tts.py "Привет, мир" --voice ermil --emotion good --format oggopus --output ./out/reply.ogg
 ```
 
-Replace `/absolute/skill` with the installed skill root. Commands work outside the checkout. Output replacement requires `--overwrite`; source files remain protected. The default recovery pointer is `<output-stem>.job.json`; it points to private durable state and is sufficient for `--resume`.
+Replace `/absolute/skill` with the installed skill root. Original inputs are preserved; replacing output requires `--overwrite`. The recovery pointer is `<output-stem>.job.json`. Commands work outside checkout. `--check` is local/read-only; only explicit `--probe-audio` submits an audio diagnostic.
 
-## Defaults and limits
+## Preferences and limits
 
-Read `$HOME/.config/yandex-speech/config.json`; Hermes binds this location to the active workspace. Only `--config PATH` selects another file. Explicit options override user-file values, which override adapter defaults, which override built-ins. Existing voice/language/S3 environment aliases stay adapter defaults. [Configuration and API options](references/transcription.md).
+Saved preferences live in `$HOME/.config/yandex-speech/config.json`, relative to the active workspace in Hermes. Explicit call options take priority, then the selected user file, adapter defaults and built-ins. Only `--config PATH` changes the selected file.
 
-Recorded recognition defaults to **API v3**, preferring gRPC when available and otherwise REST, with `literature_text=true`, normalization enabled, profanity masking disabled and phone formatting disabled. A fixed API version never silently changes generation. For gRPC inline recognition, prepared duration is at most **14,400,000 ms** and the complete serialized protobuf is at most **60,000,000 bytes**. REST v3 applies that wire cap to the complete JSON including base64. Compatible storage objects may be at most **1,000,000,000 bytes** and **14,400,000 ms**. Streaming requires gRPC and uses 16 kHz mono signed-16-bit little-endian PCM internally, at most **240 seconds / 7,680,000 bytes**, with a five-second finalization budget. [Request, state and completion contracts](references/transcription.md), [media preparation](references/media-preparation.md).
+Recorded recognition prefers API v3 through gRPC or REST and enables literary formatting by default. A fixed API choice, timing or speaker requirement is never silently dropped. Long/oversized recordings have explicit partitioning and durable recovery; see the transcription command's `--help` and [recording options](references/transcription.md). A single storage job supports up to four hours; partitioned speaker labels remain local to each job. Native mixed-recording diarization supports two anonymous speakers.
 
-Native mixed-recording diarization is limited to **two anonymous speakers by the platform**; more than two is a future [new-feature issue](https://github.com/bizyumov/yandex-speech/issues/27). Labels are request-local and do not identify people.
+Short arriving-audio recognition is limited to 240 seconds per session. It does not provide the deferred live-meeting recording mode. Existing Discord streaming through the plugin is retained.
 
-The recording fallback chain is **gRPC v3 → REST v3 + Object Storage/eligible inline → FFmpeg split + REST v1**. Auto mode changes routes only after local preflight failures; an accepted or uncertain request is recovered without resubmission. The text-only v1 tier requires an unfixed API version, compatible transport, no required timing/speakers and `literature_text=false`. Eligible short raw-text inputs can use one direct v1 request. Over-limit asynchronous partitioning remains unfinished. Explicit v1 and v2/S3 entries preserve their documented capabilities; v2 supplies timing without native speaker labels. Missing gRPC never triggers installation without the runtime owner's authorization. [Available options and trade-offs](references/transcription.md#api-options).
+## Voices and setup
 
-## Integration and verification
+Choose a supported voice/style using the [voice catalog and pronunciation examples](references/synthesis-provider-testing.md). Ermil's `good` style is distinct from another voice's `friendly`. File synthesis supports REST v1/v3 and gRPC v3; SSML uses v1, while LiveTTS uses v3. Keep explicit saved choices instead of silently substituting a voice or model.
 
-[Hermes native STT and command wrappers](references/hermes.md); [credential/readiness procedure](references/yandex-cloud-setup.md). No productive profile is changed by import, tests or installation.
+[Hermes connection](references/hermes.md) uses the native plugin/configuration CLI. [Account/key setup](references/yandex-cloud-setup.md) covers read-only inspection, a setup plan and explicitly authorized key creation into a new protected file. No Hermes configuration backend or platform fork is required.
 
-```bash
+## Checks
+
+```sh
 python -m tests --phase 3 --profile grpc
-python -m tests --phase 1
 python -m build --no-isolation
 ```
 
-Run verification from the checkout. Provider/host acceptance requires explicit synthetic fixtures and authorized credentials; ordinary CI makes no provider calls. See [acceptance coverage](tests/acceptance.json). Synthesis supports REST v1/v3 files, gRPC v3 files and incremental PCM, v1 SSML, explicit LiveTTS and complete multipart output; see [synthesis commands and controls](references/synthesis-provider-testing.md). Later scope includes full REST/storage recognition fallback, account/key creation, complete spoken-turn controls/playback and public rollout. [Changelog](CHANGELOG.md), [MIT license](LICENSE).
-
-Speech quality and voice selection: [v1 SSML, v3 general/LiveTTS voices and pronunciation](references/synthesis-provider-testing.md).
+Run from checkout in the standard runtime. CI makes no provider calls; live provider/host checks require explicit synthetic fixtures and authorization. See [changelog](CHANGELOG.md), [MIT license](LICENSE) and [acceptance coverage](tests/acceptance.json).

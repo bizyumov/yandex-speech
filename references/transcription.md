@@ -174,7 +174,7 @@ Finalization stops accepting source bytes, closes/drains source input, successfu
 0 success/no-speech; 2 CLI/config; 3 prerequisites/audio/limit; 4 authentication/permission; 5 provider/transport/retry exhaustion; 6 deadline; 7 incomplete/uncertain output; 130 cancellation. Progress/receipt paths go to stderr; successful output paths go to stdout. Keep receipts after cancellation: local cancellation does not establish server-side job cancellation or authorize rebilling.
 
 
-## Required continuous server streaming
+## Live meeting recording — next release
 
 Long meetings and monologues require a continuous transcription lifecycle.
 The existing 240-second utterance interface is not that lifecycle.
@@ -192,9 +192,8 @@ a segment-final event must not silently end a meeting. Preserve genuine
 timing/speaker information without inventing cross-connection identities.
 
 [Issue #37](https://github.com/bizyumov/yandex-speech/issues/37) specifies the
-required investigation, native Hermes source wiring, long-session behavior
-and release evidence. [Release #26](https://github.com/bizyumov/yandex-speech/issues/26)
-depends on it. A short stream, a provider registration or stt.streaming=true
+future investigation, plugin source wiring, long-session behavior
+and future-feature evidence. This work is deferred and does not block the current release. A short stream, a provider registration or stt.streaming=true
 does not verify that audio is being streamed from the actual source.
 Recorded files retain the appropriate asynchronous/native-container route.
 
