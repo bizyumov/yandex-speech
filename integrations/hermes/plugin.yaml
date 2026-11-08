@@ -3,6 +3,6 @@ version: 0.1.0
 description: Yandex SpeechKit native transcription and file/PCM synthesis
 author: Boris Izyumov
 license: MIT
-requires_hermes: ">=0.22.5"
+requires_hermes: ">=0.23.0"
 requires_env:
   - YANDEX_SPEECH_API_KEY

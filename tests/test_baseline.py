@@ -63,10 +63,12 @@ class BaselineTests(unittest.TestCase):
                                  "integrations/hermes/plugin.yaml","tests/acceptance.json"]:
                     self.assertTrue(any(n.endswith("/share/yandex-speech/"+required) for n in names),required)
                 self.assertFalse(any("/.agent/" in n or "/.gitmark/" in n or "/.env" in n for n in names))
+                self.assertNotIn("yandex_speech/hermes_setup.py", names)
                 extracted=directory/"installed"
                 artifact.extractall(extracted)
             with tarfile.open(sdist) as artifact:
                 self.assertFalse(any("/.agent/" in n or "/.serena/" in n for n in artifact.getnames()))
+                self.assertFalse(any(n.endswith("/yandex_speech/hermes_setup.py") for n in artifact.getnames()))
             skill=next(extracted.glob("*.data/data/share/yandex-speech"))
             outside=directory/"outside"
             outside.mkdir()
@@ -81,22 +83,6 @@ class BaselineTests(unittest.TestCase):
                 expected=2 if "--check" in command else 0
                 self.assertEqual(result.returncode,expected,result.stderr)
 
-            # Native enrollment must resolve the plugin from this installed payload.
-            profile=outside/"native-profile"
-            profile.mkdir()
-            (profile/"config.yaml").write_text("tts:\n  voice: ermil\n")
-            environment={"HOME":str(outside),"PATH":os.environ["PATH"],"PYTHONPATH":str(extracted),
-                         "HERMES_HOME":str(profile),"YANDEX_SPEECH_API_KEY":"synthetic-offline-only",
-                         "HERMES_TTS_VOICE":"ermil","HERMES_TTS_LANG":"ru-RU"}
-            import json
-            reports=[]
-            for operation in ["--hermes-plan","--hermes-apply","--hermes-apply"]:
-                result=subprocess.run([sys.executable,str(skill/"scripts/speech_setup.py"),operation],
-                    cwd=outside,env=environment,capture_output=True,text=True,timeout=30)
-                self.assertEqual(result.returncode,0,result.stderr or result.stdout)
-                reports.append(json.loads(result.stdout))
-            self.assertFalse(reports[-1]["changed"])
-            from hermes_cli.config import fast_safe_load
-            self.assertEqual(fast_safe_load((profile/"config.yaml").read_text())["tts"]["voice"],"ermil")
-            self.assertEqual((profile/"plugins/yandex-speech").resolve(),
-                             (extracted/"integrations/hermes").resolve())
+            # Exercise stock admission/configuration against the wheel, not this checkout.
+            from tests.test_stock_setup import exercise_native_setup
+            exercise_native_setup(self, skill/"integrations/hermes", extracted, outside)

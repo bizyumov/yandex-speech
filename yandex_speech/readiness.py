@@ -1,4 +1,4 @@
-"""Secret-safe speech readiness and explicit native Hermes enrollment."""
+"""Secret-safe speech readiness; Hermes configuration uses its native CLI."""
 from __future__ import annotations
 
 import argparse
@@ -91,31 +91,10 @@ def check(*, _context=None, _environment=None, _probe=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    operation = parser.add_mutually_exclusive_group()
-    operation.add_argument("--check", action="store_true", help="Check prerequisites without changing configuration")
-    operation.add_argument("--hermes-plan", action="store_true", help="Preview native STT/TTS enrollment in the active Hermes profile")
-    operation.add_argument("--hermes-apply", action="store_true", help="Apply the checked native STT/TTS enrollment plan")
-    parser.add_argument("--enable-stt-streaming", action="store_true", help="Explicitly enroll eligible native arriving-audio STT")
-    parser.add_argument("--enable-tts-pcm", action="store_true", help="Explicitly select Yandex native PCM synthesis streaming")
+    parser.add_argument("--check", action="store_true", help="Check prerequisites without changing configuration")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--probe-audio", type=Path, help="Explicitly submit this synthetic recording; incurs API usage")
     args = parser.parse_args(argv)
-    native = args.hermes_plan or args.hermes_apply
-    if not native and (args.enable_stt_streaming or args.enable_tts_pcm):
-        parser.error("streaming enrollment requires --hermes-plan or --hermes-apply")
-    if native:
-        if args.config is not None or args.probe_audio is not None:
-            parser.error("native enrollment uses the active workspace defaults; standalone config/probe options cannot be combined")
-        try:
-            from .hermes_setup import plan_native
-            plan = plan_native(enable_stt_streaming=args.enable_stt_streaming,
-                               enable_tts_pcm=args.enable_tts_pcm)
-            report = plan.apply() if args.hermes_apply else plan.summary()
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        except SpeechError as error:
-            print(json.dumps({"error": {"category": error.category, "message": str(error)}}))
-            return 3 if error.category == "PREREQUISITE" else 2
     context = RuntimeContext(user_home=Path.home(),
         workspace=Path(os.environ["HERMES_HOME"]) if os.getenv("HERMES_HOME") else None,
         selected_file=args.config)

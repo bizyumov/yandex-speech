@@ -17,3 +17,10 @@ GitHub Issues holds complete specifications, numbered acceptance criteria and de
 ## Markdown search and complete document indexing
 
 Markdown MUST use GitMark indexing/search before locating or reading project documents. Index ALL project Markdown regardless of .gitignore, including ignored task specifications and instructions. Run `GITMARK_NO_GIT=1 gitmark --root /opt/skills/yandex-speech index`, then `gitmark --root /opt/skills/yandex-speech search "query"`; open only the relevant returned documents. Verify ignored documents are searchable. Reindex after Markdown edits and commits. Keep .gitmark derived/ignored and private task material unpublished. Markdown may be edited with ordinary file tools; Serena is mandatory for source code.
+
+
+## External Hermes ownership boundary — operator correction, 2026-11-07
+
+Hermes is an external upstream dependency. Speech-skill work does not authorize changing its source, adding platform interfaces, maintaining a fork or deploying an assistant-modified platform. Use stock Hermes plugin APIs, including its existing streaming factory. Do not make a custom expected-state writer or another Hermes source update a prerequisite for this plugin.
+
+An explicit operator command to install a named official Hermes release authorizes that installation, not subsequent application feature patches. If a requested integration cannot be implemented through stock supported interfaces, establish the exact limitation and return it for a scope decision; do not silently expand into platform development. Preserve the operator's original functional requirements and state any unmet capability honestly.
