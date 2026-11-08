@@ -115,17 +115,40 @@ class LiveSynthesisTests(unittest.TestCase):
             results.append(dict(self.client.last_synthesis))
         self.proof({"requests":results})
 
-    @unittest.skipUnless(os.environ.get("YANDEX_SPEECH_HOST_TESTS")=="1",
+    @unittest.skipUnless(os.environ.get("YANDEX_SPEECH_HOST_TESTS") == "1",
                          "explicit active-host tool opt-in required")
     def test_standard_hermes_tool_uses_configured_yandex_provider(self):
+        import time
+        from hermes_cli.config import load_config_readonly
         from tools.tts_tool import text_to_speech_tool
-        result=json.loads(text_to_speech_tool("Проверка штатного голосового ответа.",
-                          output_path=str(self.root/"standard.ogg")))
-        self.assertTrue(result.get("success"),"standard Hermes TTS failed")
-        self.assertEqual(result["provider"],"yandex")
+        profile = Path(os.environ["HERMES_HOME"])
+        watched = [path for path in (profile / "config.yaml", profile / ".env",
+            profile / ".config/yandex-speech/config.json") if path.is_file()]
+        before = {path: path.read_bytes() for path in watched}
+        selected = load_config_readonly()
+        for kind in ("stt", "tts"):
+            self.assertEqual(selected.get(kind, {}).get("provider"), "yandex")
+            override = selected.get(kind, {}).get("providers", {}).get("yandex") or {}
+            self.assertNotEqual(override.get("type"), "command", "native route must not be shadowed")
+        started = time.monotonic()
+        result = json.loads(text_to_speech_tool("Проверка штатного голосового ответа.",
+                          output_path=str(self.root / "standard.ogg")))
+        synthesis_seconds = time.monotonic() - started
+        self.assertTrue(result.get("success"), "standard Hermes TTS failed")
+        self.assertEqual(result["provider"], "yandex")
         self.assertTrue(result.get("voice_compatible"))
-        self.assertEqual(self.probe(Path(result["file_path"]))["streams"][0]["codec_name"],"opus")
-        self.proof({"standard_tool":result})
+        self.assertEqual(self.probe(Path(result["file_path"]))["streams"][0]["codec_name"], "opus")
+        from agent import transcription_registry, tts_registry
+        for registry in (transcription_registry, tts_registry):
+            registered = registry.get_provider("yandex")
+            self.assertIsNotNone(registered, "paired native provider registration required")
+            self.assertEqual(registered.workspace.resolve(), profile.resolve())
+        for path, data in before.items():
+            self.assertTrue(path.read_bytes() == data, "owning-profile settings/credentials changed during check")
+        self.proof({"standard_tool": result, "owning_profile_readonly_check": True,
+            "native_stt_tts_selected": True, "command_overrides_absent": True,
+            "synthesis_seconds": synthesis_seconds, "delivery_seconds": None,
+            "timing_basis": "standard text_to_speech tool wall time; actual Telegram delivery remains operator-driven"})
 
     def test_installed_skill_synthesis_commands_and_missing_grpc(self):
         import select

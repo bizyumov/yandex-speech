@@ -62,7 +62,7 @@ jobs:
       - name: Verify stock Discord streaming contracts
         run: python -m unittest tests.test_discord_ingress
       - name: Run offline acceptance
-        run: python -m tests --phase 3 --profile ${{ matrix.profile }}
+        run: python -m tests --increment feedback --profile ${{ matrix.profile }}
       - name: Verify source and wrapper syntax
         shell: bash
         run: |
@@ -72,6 +72,6 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
-          name: phase3-${{ matrix.profile }}-evidence
-          path: .agent/tasks/public-release/testing-evidence/phase3-*.json
+          name: feedback-${{ matrix.profile }}-evidence
+          path: .agent/tasks/public-release/testing-evidence/feedback-*.json
           include-hidden-files: true

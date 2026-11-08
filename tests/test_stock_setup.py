@@ -120,3 +120,42 @@ class NativeCliSetupTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix="speech-native-cli-") as directory:
             exercise_native_setup(self, root / "integrations/hermes", root, Path(directory))
+
+    def test_native_cli_migrates_known_literal_preferences_without_an_enrollment_writer(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix="speech-cli-migration-") as temporary:
+            home = Path(temporary)
+            profile = home / "profile"
+            profile.mkdir()
+            config = profile / "config.yaml"
+            known = "python " + str(root / "scripts/tts.py") + " --input-file {input_path} --output {output_path} --voice ermil --emotion good"
+            config.write_text("# retain migration comment\n" + json.dumps({
+                "model": {"default": "unrelated-model"},
+                "tts": {"providers": {"yandex": {"type": "command", "command": known},
+                                     "other": {"type": "command", "command": "do-not-touch"}}}}))
+            secret = profile / ".env"
+            secret.write_text("TEST_ONLY_SECRET=synthetic-preserved\n")
+            before_secret = secret.read_bytes()
+            env = {k: os.environ[k] for k in ("PATH", "VIRTUAL_ENV", "LANG") if k in os.environ}
+            env.update(HOME=str(home), HERMES_HOME=str(profile))
+            commands = [
+                ("config", "set", "tts.voice", "ermil", "--force"),
+                ("config", "set", "tts.yandex.role", "good", "--force"),
+                ("config", "set", "tts.yandex.language", "ru-RU", "--force"),
+                ("config", "unset", "tts.providers.yandex"),
+                ("config", "set", "tts.provider", "yandex"),
+            ]
+            for args in commands:
+                result = subprocess.run([sys.executable, "-m", "hermes_cli.main", *args],
+                    cwd=home, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-2500:])
+            from hermes_cli.config import fast_safe_load
+            selected = fast_safe_load(config.read_text())
+            self.assertEqual(selected["tts"]["voice"], "ermil")
+            self.assertEqual(selected["tts"]["yandex"]["role"], "good")
+            self.assertEqual(selected["tts"]["yandex"]["language"], "ru-RU")
+            self.assertNotIn("yandex", selected["tts"]["providers"])
+            self.assertEqual(selected["tts"]["providers"]["other"]["command"], "do-not-touch")
+            self.assertEqual(selected["model"]["default"], "unrelated-model")
+            self.assertEqual(secret.read_bytes(), before_secret)
+            self.assertIn("# retain migration comment", config.read_text())

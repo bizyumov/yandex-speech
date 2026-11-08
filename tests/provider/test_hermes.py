@@ -1,4 +1,4 @@
-"""Real provider requests consumed through Hermes 0.22.5 host dispatch."""
+"""Real provider requests consumed through the configured stock Hermes runtime host dispatch."""
 import json
 import os
 import time
@@ -55,7 +55,7 @@ class LiveHermesTests(unittest.TestCase):
             finally:
                 reset_secret_scope(token)
         (self.root/"acceptance.json").write_text(json.dumps({
-            "case":self.id(),"result":"passed","host":"Hermes 0.22.5",
+            "case":self.id(),"result":"passed","host":"the configured stock Hermes runtime",
             "file_dispatch":"tools.transcription_command._dispatch_to_plugin_provider",
             "stream_dispatch":"tools.transcription_streaming.open_streaming_session",
             "file_tail_verified":True,"stream_tail_verified":True,
