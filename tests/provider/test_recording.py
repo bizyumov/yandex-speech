@@ -15,6 +15,24 @@ from yandex_speech.output import write_output
 from yandex_speech.transcription import SpeechTranscriber
 
 
+def late_control_tail(result, after_seconds):
+    import math
+    import re
+    for segment in result.get("segments", []):
+        if segment.get("timing_source") != "provider":
+            continue
+        words = segment.get("words", [])
+        for left, right in zip(words, words[1:]):
+            labels = [re.sub(r"[^а-яё]+", "", word.get("word", "").casefold()) for word in (left, right)]
+            if labels != ["контрольный", "хвост"]:
+                continue
+            times = [left.get("start"), left.get("end"), right.get("start"), right.get("end")]
+            if (all(type(value) in (int, float) and math.isfinite(value) for value in times)
+                    and after_seconds <= times[0] < times[1]
+                    and times[0] <= times[2] < times[3]):
+                return True
+    return False
+
 @unittest.skipUnless(os.environ.get("YANDEX_SPEECH_LIVE_TESTS") == "1", "explicit provider opt-in required")
 class LiveRecordingTests(unittest.TestCase):
     def setUp(self):
@@ -67,6 +85,51 @@ class LiveRecordingTests(unittest.TestCase):
             "job_manifest": str(job.manifest_path), "api_version": result["api_version"],
             "segments": len(result["segments"]), "tail_verified": True,
             "literary_verified": True, "raw_preserved": bool(result["raw"])}, indent=2))
+
+    def test_native_stereo_mp3_uses_encoded_bytes_with_nonzero_start(self):
+        import wave
+        from unittest.mock import patch
+        from yandex_speech.grpc_stt import MAX_GRPC_BYTES
+        from tests.provider.test_recording_maximum import write_sparse_recording
+        with wave.open(str(self.fixtures / "single.wav"), "rb") as source:
+            self.assertEqual((source.getnchannels(), source.getsampwidth(), source.getframerate()), (1, 2, 16000))
+            marker = source.readframes(source.getnframes())
+        sparse = self.root / "decoded-under-test.wav"
+        write_sparse_recording(sparse, marker, 1900 * 16000, [0, 1900 * 16000 - len(marker) // 2])
+        path = self.root / "native-stereo.mp3"
+        encoded = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-n", "-i", str(sparse),
+            "-ac", "2", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k", str(path)],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(encoded.returncode, 0)
+        original = hashlib.sha256(path.read_bytes()).hexdigest()
+        self.assertGreater(1900 * 16000 * 2, MAX_GRPC_BYTES)
+        self.assertLess(path.stat().st_size + 4096, MAX_GRPC_BYTES)
+        from yandex_speech.media import _tool
+        def no_expansion(name):
+            self.assertNotEqual(name, "ffmpeg", "eligible native MP3 must not be expanded")
+            return _tool(name)
+        with patch("yandex_speech.media._tool", side_effect=no_expansion):
+            job = self.client.start_transcription(path, diarize=False, timestamps=True,
+                api_version="3", transport="grpc", deadline_seconds=180)
+        result = self.client.poll_until_complete(job, deadline_seconds=180)
+        self.assertTrue(result["input_complete"])
+        self.assertTrue(late_control_tail(result, 1800), "the final marker tail needs its own genuine late word times")
+        info = job.data["source_info"]
+        self.assertFalse(info["converted"])
+        self.assertEqual(info["source_sha256"], original)
+        self.assertEqual(info["prepared"]["channels"], 2)
+        self.assertEqual(info["prepared"]["container"], "MP3")
+        self.assertGreater(info["original"]["start_time_seconds"], 0)
+        self.assertEqual(info["timeline_offset_seconds"], info["original"]["start_time_seconds"])
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), original)
+        receipt = {"case": self.id(), "input_complete": True, "source_unchanged": True,
+            "native_mp3_preserved": True, "channels": 2, "nonzero_encoder_start": True,
+            "source_seconds": 1900, "encoded_bytes": path.stat().st_size,
+            "decoded_mono_bytes": 1900 * 16000 * 2, "production_byte_cap": MAX_GRPC_BYTES,
+            "tail_near_end_verified": True, "transport": result["transport"], "api_version": result["api_version"]}
+        with (self.root / "acceptance.json").open("x") as stream:
+            json.dump(receipt, stream, indent=2)
+        (self.root / "acceptance.json").chmod(0o600)
 
     def test_real_two_speaker_timing_and_final_tail(self):
         job = self.client.start_transcription(self.fixtures / "two-speaker.wav",
