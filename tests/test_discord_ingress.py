@@ -263,10 +263,9 @@ class OfflineAdapter:
         if self.echo_gate is not None:
             await self.echo_gate.wait()
         self.routes.append(route)
-        event = SimpleNamespace(text=transcript,
-            raw_message=SimpleNamespace(guild_id=guild_id),
-            source=SimpleNamespace(user_id=str(user_id), chat_id=str(route)))
-        self.manager.observe_admission(event=event)
+        self.manager.observe_admission(platform="discord",
+            source={"guild_id": str(guild_id), "user_id": str(user_id), "chat_id": str(route)},
+            text=transcript, message_id=None, session_key="offline-control")
 
 
 class CoordinatorTests(unittest.IsolatedAsyncioTestCase):

@@ -733,20 +733,20 @@ class DiscordIngress:
     def note_recorded_asr(self):
         self.emit("recorded_asr_started")
 
-    def observe_admission(self, event=None, **kwargs):
-        if event is None:
+    def observe_admission(self, *, platform="", source=None, text="", **kwargs):
+        # Native post_gateway_admission supplies a plain snapshot, never a MessageEvent.
+        if platform != "discord" or not isinstance(source, dict):
             return
-        raw, source = getattr(event, "raw_message", None), getattr(event, "source", None)
-        guild = getattr(raw, "guild_id", None)
-        if guild is None or source is None:
-            return
-        digest = _text_digest(str(getattr(event, "text", "")).strip())
+        user_id = str(source.get("user_id", ""))
+        chat_id = str(source.get("chat_id", ""))
+        guild_id = source.get("guild_id")
+        digest = _text_digest(str(text).strip())
         with self.lock:
             matching = [capture for capture in self.captures.values()
                         if capture.committed and not capture.admitted
-                        and capture.observer.guild_id == guild
-                        and str(capture.user_id) == str(getattr(source, "user_id", ""))
-                        and str(capture.binding) == str(getattr(source, "chat_id", ""))
+                        and (guild_id is None or str(capture.observer.guild_id) == str(guild_id))
+                        and str(capture.user_id) == user_id
+                        and str(capture.binding) == chat_id
                         and capture.text_hash == digest]
             if len(matching) == 1:
                 matching[0].admitted = True

@@ -69,6 +69,13 @@ if module is not None:
                                             "_is_allowed_user", "_voice_input_callback")},
             "plugin_methods": {name: probe_stamp(getattr(manager, name))
                                for name in ("_deliver", "_open_native", "allowed")},
+            "captures": [{"id": capture.id, "committed": capture.committed,
+                          "delivery_pending": capture.delivery_pending, "admitted": capture.admitted,
+                          "cancelled": capture.cancelled,
+                          "task_done": capture.delivery_task.done() if capture.delivery_task else None,
+                          "task_error_type": type(getattr(capture.delivery_task, "_exception", None)).__name__
+                              if capture.delivery_task and getattr(capture.delivery_task, "_exception", None) else None}
+                         for capture in list(manager.captures.values())],
             "observers": observers,
         })
 home = Path(os.environ["HERMES_HOME"])

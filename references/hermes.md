@@ -138,7 +138,7 @@ One ffmpeg converter per active source produces16kHz mono signed16-bit PCM. Plug
 
 The stock receiver still allocates a WAV after silence. In managed live mode the plugin defers ASR for that allocation, preventing a second recognition/callback; the allocation itself is not evidence of a switch to file recognition. Failed live captures do not silently replay through file ASR or select another provider. Normal attachments retain recorded recognition.
 
-[Issue43](https://github.com/bizyumov/yandex-speech/issues/43) defines the acceptance contract. Focused offline checks and a real-Yandex/local-UDP component test cover the receiver, progressive recognition, complete tail and lifecycle. The live Discord canary remains pending at this revision; the component test does not establish it or hour-long capture.
+[Issue43](https://github.com/bizyumov/yandex-speech/issues/43) defines the acceptance contract. Focused offline checks and a real-Yandex/local-UDP component test cover the receiver, progressive recognition, complete tail and lifecycle. A real Discord canary on the existing official adapter subsequently produced progressive Yandex text during speech, a complete agreed tail, and exactly one matching ordinary Native input. Loaded Native method fingerprints matched the official release. This proves the observed capability, not lossless or hour-long capture.
 
 ```sh
 python -m unittest tests.test_discord_ingress
