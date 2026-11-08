@@ -111,7 +111,7 @@ The active workspace's user-file TTS preferences remain above native voice/model
 
 Native file requests map host ogg/opus to SpeechKit oggopus and return a path with the actual container extension. An unsupported native file format uses WAV and a .wav path. A nonempty file or symlink is refused before synthesis. An existing empty host allocation is left untouched: the adapter publishes a unique completed sibling and returns its actual path, as the native caller contract permits. Absent destinations also publish without clobbering. A changed or populated allocation detected before publication fails and retains the owned staged audio. A writer arriving after the last check keeps its original inode because the adapter never enables overwrite. Incomplete multipart evidence remains retained by its owning synthesis operation. These adapter checks do not certify delivery to a messenger or playback in a connected channel.
 
-A same-name `tts.providers.yandex` command entry still takes precedence over native registration. Reconcile it through the scoped setup workflow before selecting native Yandex TTS. Compatibility wrappers remain available. Raw XML SSML remains an explicit skill CLI/Python v1 operation because the ordinary host text cleaner is not a raw-XML route.
+A same-name `tts.providers.yandex` command entry still takes precedence over native registration. Inspect its saved preferences and reconcile only the owned entry through the native configuration CLI before selecting native Yandex TTS. Compatibility wrappers remain available. Raw XML SSML remains an explicit skill CLI/Python v1 operation because the ordinary host text cleaner is not a raw-XML route.
 
 
 ## Stock Hermes configuration
@@ -123,10 +123,15 @@ hermes plugins install bizyumov/yandex-speech/integrations/hermes --ref COMMIT -
 hermes plugins enable yandex-speech
 hermes config set stt.provider yandex
 hermes config set stt.streaming true
-hermes config set stt.yandex.language ru-RU --force
+hermes config set stt.yandex.language ru-RU
+hermes config set tts.provider yandex
 ```
 
-Review an existing same-name command provider and retain its preferences before removing it through the native CLI. Native plugin installation/admission and these ordinary key changes do not require a platform fork or an extended configuration writer. The legacy convenience enrollment helper is not the setup path for this stock integration; standalone readiness checks remain available.
+Review an existing same-name command provider and retain its preferences before removing it through the native CLI. Native plugin installation/admission and these ordinary key changes do not require a platform fork or an extended configuration writer. The skill-owned enrollment/configuration writer and its `--hermes-plan`, `--hermes-apply`, `--enable-stt-streaming` and `--enable-tts-pcm` switches have been removed. Standalone `python scripts/speech_setup.py --check` remains a read-only readiness diagnostic; only explicit `--probe-audio` submits audio.
+
+Preserve existing voice/language/role preferences before removing a same-name command entry. For example, retain literal Ermil/Good with `hermes config set tts.voice ermil` and `hermes config set tts.yandex.role good`, then remove only the reconciled entry with `hermes config unset tts.providers.yandex` (and the equivalent STT entry if present). Do not remove an unrecognized command or overwrite unrelated preferences automatically. Verify selected values using `hermes config get stt.provider`, `hermes config get stt.streaming` and `hermes config get tts.provider`. Registration, synthesis and actual Discord/Telegram delivery are separate checks.
+
+Offline package acceptance places the installed plugin payload in a fresh profile's `plugins/yandex-speech` directory, enables it with the native CLI, selects providers through native configuration commands and verifies real registration from outside the checkout. It also verifies repeatability and preservation of another profile, credentials, comments and unrelated settings. These checks make no provider call and do not test Hermes's network Git downloader. Existing productive gateways are not changed by them.
 
 ## Discord arriving-audio binding
 
