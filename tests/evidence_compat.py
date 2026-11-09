@@ -74,6 +74,7 @@ def unchanged_core_evidence(document, root, eligible_cases):
     if {path.name for path in root.glob("requirements*.txt")} != dependencies:
         raise ValueError("dependency input set changed; fresh provider evidence is required")
     checked = []
+    version_metadata = None
     for name, raw in old.items():
         if (name.startswith(("yandex_speech/", "scripts/", "tests/provider/"))
                 or name == "tests/__init__.py" or "/" not in name):
@@ -82,6 +83,18 @@ def unchanged_core_evidence(document, root, eligible_cases):
                 raise ValueError("a retained core input is missing or redirected: " + name)
             current = path.read_bytes()
             equal = _project_compatible(raw, current) if name == "pyproject.toml" else current == raw
+            if name == "VERSION" and not equal:
+                import re
+                from datetime import date
+                try:
+                    value = current.decode("ascii").strip()
+                    if not re.fullmatch(r"\d{4}\.(?:[1-9]|1[0-2])\.(?:[1-9]|[12]\d|3[01])(?:-[1-9]\d*)?", value):
+                        raise ValueError("release version is not canonical calendar metadata")
+                    date(*map(int, value.split("-", 1)[0].split(".")))
+                    version_metadata = {"origin": raw.decode("ascii").strip(), "current": value}
+                except (UnicodeError, ValueError) as error:
+                    raise ValueError("invalid release-version metadata projection") from error
+                equal = True
             if not equal:
                 raise ValueError("a retained core implementation or fixture changed: " + name)
             checked.append(name)
@@ -99,5 +112,5 @@ def unchanged_core_evidence(document, root, eligible_cases):
     return outcomes, {
         "kind": "reviewed-unchanged-standalone-core", "origin_revision": document["revision"],
         "origin_source_digest": document["source_digest"], "checked_files": sorted(checked),
-        "host_evidence_reused": False,
+        "host_evidence_reused": False, "version_metadata": version_metadata,
     }

@@ -4,7 +4,7 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
-## 0.1.0 - 2026-11-09
+## 2026.11.9 - 2026-11-09
 
 - Maintain the complete voice catalog with conditional API/model/language/role availability and a refresh procedure; generate optional previews on request. Use quoted installed-path examples with YS.
 
@@ -35,9 +35,13 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 - Add synthesis API v3 REST/gRPC complete files, explicit LiveTTS model/voices, direct MP3, WAV length finalization, structural v1 SSML, safe long-text assembly and incremental 24 kHz gRPC PCM.
 
-- Establish the 0.1.0 development baseline: MIT, skill documentation, optional dependency profiles, HOME/workspace configuration and acceptance coverage.
+- Establish the development baseline: MIT, skill documentation, optional dependency profiles, HOME/workspace configuration and acceptance coverage.
 - Add gRPC v3 recording recognition with private job receipts, restart recovery, complete result drain, original-media timing and two-speaker exports.
 - Add bounded arriving-audio preparation and external-EOU completion, cancellation, previews and a native Hermes 0.23.0 STT provider.
 - Preserve explicit REST and synthesis entry points; correct service-account folder handling, raw/literary provenance, wrapper defaults and output preservation.
 
 Live meeting recording and additional Discord conversation modes remain next-release work.
+
+## 0.1.0 - 2026-11-09
+
+Published with an incorrect version identifier. Superseded by 2026.11.9 under the owner's YYYY.M.D[-N] calendar-versioning policy; the original tag is retained.

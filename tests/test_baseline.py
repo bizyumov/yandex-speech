@@ -35,7 +35,9 @@ class BaselineTests(unittest.TestCase):
         from ruamel.yaml import YAML
         from yandex_speech import __version__
         version=(ROOT/"VERSION").read_text().strip()
-        self.assertRegex(version,r"^\d+\.\d+\.\d+$")
+        self.assertRegex(version, r"^\d{4}\.(?:[1-9]|1[0-2])\.(?:[1-9]|[12]\d|3[01])(?:-[1-9]\d*)?$")
+        from datetime import date
+        date(*map(int, version.split("-", 1)[0].split(".")))
         self.assertEqual(__version__,version)
         self.assertIn("## Unreleased",(ROOT/"CHANGELOG.md").read_text())
         license_text=(ROOT/"LICENSE").read_text()

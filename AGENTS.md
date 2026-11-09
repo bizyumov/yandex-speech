@@ -24,3 +24,7 @@ Markdown MUST use GitMark indexing/search before locating or reading project doc
 Hermes is an external upstream dependency. Speech-skill work does not authorize changing its source, adding platform interfaces, maintaining a fork or deploying an assistant-modified platform. Use stock Hermes plugin APIs, including its existing streaming factory. Do not make a custom expected-state writer or another Hermes source update a prerequisite for this plugin.
 
 An explicit operator command to install a named official Hermes release authorizes that installation, not subsequent application feature patches. If a requested integration cannot be implemented through stock supported interfaces, establish the exact limitation and return it for a scope decision; do not silently expand into platform development. Preserve the operator's original functional requirements and state any unmet capability honestly.
+
+## Release version policy — operator correction, 2026-11-09
+
+Use YYYY.M.D[-N] calendar versions, with unpadded month/day and an optional same-day revision suffix. Use the approved release date in the operator's timezone. VERSION is the sole authority; CLI/package/plugin projections and the unprefixed release tag must agree. Do not choose semantic-version defaults. Before publishing, verify the requested release identity and existing tags; preserve already-published immutable tags when correcting an identifier.
