@@ -40,6 +40,14 @@ The tool returns generated audio and a `media_tag`. The assistant must emit the 
 
 Native synthesis preserves existing nonempty files and symlinks, returns an artifact with its actual container extension and can publish a new sibling for an empty host allocation. File synthesis remains available through eligible REST routes without gRPC. Optional v3 PCM output requires compatible voice/settings and gRPC; PCM availability alone does not create a player.
 
+## Which voice settings apply?
+
+Ctrl+B (the default voice.record_key) toggles recording in the focused interactive Hermes CLI/TUI when local voice mode is enabled. It uses the microphone on the machine running that CLI. A gateway service has no interactive terminal for this shortcut.
+
+The voice.silence_threshold, voice.silence_duration and voice.max_recording_seconds settings control that local microphone recorder. Its beep, auto_tts, stop_phrases and barge_in settings also belong to local voice mode. They do not change Discord capture, its pause during replies or its phrase timing.
+
+Discord uses the selected stt.provider and stt.streaming path. On stock Hermes 0.23.0 its receiver ends a phrase after 1.5 seconds without packets and requires at least 0.5 seconds of buffered audio; these are source constants, not voice.* configuration leaves. discord.voice_channel_inactivity_timeout_seconds controls how long the bot stays in the channel, separately from phrase timing and recognition latency.
+
 ## Accepted Discord conversation
 
 The plugin feeds authorized decoded PCM from the existing Discord client into the stock streaming factory. It preserves profile/user/channel binding, bounds pending audio and submits a successful final once through the unchanged native voice callback. Healthy silence/mute finalizes that same stream; managed live mode prevents duplicate recognition of the receiver's WAV. Normal attachments keep recorded recognition. Failed live capture is explicit.
