@@ -12,6 +12,8 @@ API v3 does not mean LiveTTS. General and LiveTTS voices belong to separate mode
 
 ## REST v1 with SSML
 
+Set `YS` once to the installed skill directory (replace `<path-to-skill>` in the command below) and reuse it in the examples.
+
 Save this as `pronunciation.ssml`:
 
 ```xml
@@ -23,7 +25,8 @@ Save this as `pronunciation.ssml`:
 ```
 
 ```bash
-python /absolute/skill/scripts/tts.py --input-file ./pronunciation.ssml --text-format ssml --api-version 1 --transport rest --model general --lang ru-RU --voice ermil --emotion good --format mp3 --output ./pronunciation.mp3
+YS='<path-to-skill>'
+python "$YS/scripts/tts.py" --input-file ./pronunciation.ssml --text-format ssml --api-version 1 --transport rest --model general --lang ru-RU --voice ermil --emotion good --format mp3 --output ./pronunciation.mp3
 ```
 
 SSML is a v1 operation. The supported phoneme feature is Russian-only. IPA `ə` maps to X-SAMPA `@`; IPA `ɐ` maps to `6`. The two milk examples above are therefore different transcriptions. Preserve the requested examples as comparisons; do not certify them as acoustically equivalent.
@@ -35,8 +38,8 @@ The complete published phoneme inventory, validation and comparison tooling is [
 Stress marks go immediately before the stressed vowel, inside complete Russian sentences:
 
 ```bash
-python /absolute/skill/scripts/tts.py "Перед нами старинный з+амок. sil<[300]> Мы закрываем зам+ок." --api-version 3 --transport grpc --model general --lang ru-RU --voice alexander --role good --format mp3 --output ./stress.mp3
-python /absolute/skill/scripts/tts.py "Здравствуйте! Чем я могу вам помочь?" --api-version 3 --transport grpc --model livetts --lang ru-RU --voice sergey --role support --format mp3 --output ./livetts.mp3
+python "$YS/scripts/tts.py" "Перед нами старинный з+амок. sil<[300]> Мы закрываем зам+ок." --api-version 3 --transport grpc --model general --lang ru-RU --voice alexander --role good --format mp3 --output ./stress.mp3
+python "$YS/scripts/tts.py" "Здравствуйте! Чем я могу вам помочь?" --api-version 3 --transport grpc --model livetts --lang ru-RU --voice sergey --role support --format mp3 --output ./livetts.mp3
 ```
 
 Native text markup is distinct from XML SSML and is supported for Russian text in API v1 and v3:
