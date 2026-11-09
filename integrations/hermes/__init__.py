@@ -22,7 +22,10 @@ def register(ctx):
     workspace=Path(ctx._manager.home_path)
     provider=YandexTranscriptionProvider(workspace,profile=stt.get("yandex") or {})
     ctx.register_transcription_provider(provider)
-    ctx.register_tts_provider(YandexTTSProvider(workspace,profile=config.get("tts") or {}))
+    tts_provider = YandexTTSProvider(workspace,profile=config.get("tts") or {})
+    ctx.register_tts_provider(tts_provider)
+    from .ssml_tool import register_ssml_tool
+    register_ssml_tool(ctx, tts_provider)
     if streaming_enabled(stt) and str(stt.get("provider", "")).lower() == "yandex":
         from yandex_speech.discord_ingress import DiscordIngress
         ingress = DiscordIngress(workspace, provider, stt)

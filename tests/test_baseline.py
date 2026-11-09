@@ -60,7 +60,8 @@ class BaselineTests(unittest.TestCase):
                 names=artifact.namelist()
                 for required in ["SKILL.md","README.md","VERSION","CHANGELOG.md","LICENSE",
                                  "references/transcription.md","scripts/speech_setup.py",
-                                 "integrations/hermes/plugin.yaml","tests/acceptance.json"]:
+                                 "integrations/hermes/plugin.yaml","integrations/hermes/ssml_tool.py",
+                                 "tests/acceptance.json"]:
                     self.assertTrue(any(n.endswith("/share/yandex-speech/"+required) for n in names),required)
                 self.assertFalse(any("/.agent/" in n or "/.gitmark/" in n or "/.env" in n for n in names))
                 self.assertNotIn("yandex_speech/hermes_setup.py", names)

@@ -193,14 +193,16 @@ def read_reviews(path, required):
     return outcomes
 
 
-def read_provider_evidence(path, digest, hermes_state, packages):
-    document = json.loads(Path(path).read_text())
+def read_provider_evidence(path, digest, hermes_state, packages, *,
+                           allow_unchanged_core=False, eligible_core_cases=()):
+    import hashlib
+    raw = Path(path).read_bytes()
+    document = json.loads(raw)
     if (not isinstance(document, dict) or not isinstance(document.get("hermes"), dict)
             or not isinstance(hermes_state, dict)):
         raise ValueError("provider evidence must include its observed runtime")
     if (document.get("schema_version") != 1 or document.get("profile") != "grpc"
             or document.get("provider_opt_in") is not True
-            or document.get("source_digest") != digest
             or document.get("hermes", {}).get("revision") != hermes_state.get("revision")
             or document["hermes"].get("worktree_clean") is not True
             or hermes_state.get("worktree_clean") is not True
@@ -212,8 +214,32 @@ def read_provider_evidence(path, digest, hermes_state, packages):
         raise ValueError("provider evidence does not match clean source, Python, packages and explicit executed run")
     if any(value not in {"passed", "failed", "error", "skipped"} for value in document["outcomes"].values()):
         raise ValueError("provider evidence contains an unknown outcome")
+    if document.get("source_digest") != digest:
+        if not allow_unchanged_core:
+            raise ValueError("provider evidence source digest does not match")
+        from tests.evidence_compat import unchanged_core_evidence
+        outcomes, proof = unchanged_core_evidence(document, ROOT, set(eligible_core_cases))
+        document = dict(document, outcomes=outcomes, host_opt_in=False, reuse_proof=proof)
+    document["evidence_source"] = {
+        "path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+        "revision": document.get("revision"), "source_digest": document.get("source_digest"),
+        "reuse_proof": document.get("reuse_proof"),
+        "host_evidence_eligible": document.get("host_opt_in") is True,
+    }
     return document
 
+
+def merge_provider_observations(documents):
+    """Reject conflicting retained verdicts; current executed outcomes still take precedence."""
+    outcomes, host_cases = {}, set()
+    for document in documents:
+        for case, outcome in document["outcomes"].items():
+            if case in outcomes and outcomes[case] != outcome:
+                raise ValueError("retained evidence has conflicting verdicts for " + case)
+            outcomes[case] = outcome
+            if document.get("host_opt_in") is True:
+                host_cases.add(case)
+    return outcomes, host_cases
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -223,13 +249,18 @@ def parse_args(argv=None):
     parser.add_argument("--profile", choices=["base", "grpc", "storage"], default="grpc")
     provider = parser.add_mutually_exclusive_group()
     provider.add_argument("--provider", action="store_true", help="Run billable synthetic provider checks")
-    provider.add_argument("--provider-evidence", type=Path, help="Reuse a matching retained provider/host run without rebilling")
+    provider.add_argument("--provider-evidence", type=Path, action="append",
+                          help="Reuse matching retained runs; repeat for distinct provider/host observations")
+    parser.add_argument("--reuse-unchanged-core", action="store_true",
+                        help="After adapter review, reuse verified unchanged standalone core cases; never changed host cases")
     parser.add_argument("--host", action="store_true")
     parser.add_argument("--maximum-recording", action="store_true",
                         help="Explicitly permit the >4-hour synthetic uploaded-file provider check")
     parser.add_argument("--review-evidence", type=Path, help="Retained listener verdicts with heard audio and source binding")
     parser.add_argument("--evidence", type=Path)
     args = parser.parse_args(argv)
+    if args.reuse_unchanged_core and not args.provider_evidence:
+        parser.error("--reuse-unchanged-core requires retained provider evidence")
     if args.host and not args.provider:
         parser.error("--host requires --provider and explicit synthetic credentials/fixtures")
     if (args.provider or args.provider_evidence) and args.profile != "grpc":
@@ -283,8 +314,13 @@ def main(argv=None):
             review_ids.update(record.get("review", []))
             coverage[ac]["review"] = ["review:" + name for name in record.get("review", [])]
         reviews = read_reviews(args.review_evidence, review_ids)
-        reused = (read_provider_evidence(args.provider_evidence, digest, hermes, packages)
-                  if args.provider_evidence else None)
+        core_cases = {case for levels in coverage.values() for case in levels["provider"]}
+        host_cases = {case for levels in coverage.values() for case in levels["host"]}
+        reused = [read_provider_evidence(path, digest, hermes, packages,
+                    allow_unchanged_core=args.reuse_unchanged_core,
+                    eligible_core_cases=core_cases - host_cases)
+                  for path in (args.provider_evidence or [])]
+        retained_outcomes, retained_host_cases = merge_provider_observations(reused)
         modules = [f"tests.{p.stem}" for p in sorted((ROOT / "tests").glob("test_*.py")) if p.stem not in omitted]
         cases = selected_tests(modules)
         for record in manifest["acceptance"].values():
@@ -305,11 +341,11 @@ def main(argv=None):
         if reused:
             for levels in coverage.values():
                 for level in ("provider", "host"):
-                    if level == "host" and reused.get("host_opt_in") is not True:
-                        continue
                     for case in levels[level]:
-                        if case not in outcomes and case in reused["outcomes"]:
-                            outcomes[case] = reused["outcomes"][case]
+                        if level == "host" and case not in retained_host_cases:
+                            continue
+                        if case not in outcomes and case in retained_outcomes:
+                            outcomes[case] = retained_outcomes[case]
                             reused_ids.add(case)
         outcomes.update({"review:" + name: outcome for name, outcome in reviews.items()})
         statuses = {}
@@ -330,6 +366,7 @@ def main(argv=None):
             "provider_opt_in": args.provider, "host_opt_in": args.host,
             "maximum_recording_opt_in": args.maximum_recording,
             "provider_evidence_reused": bool(reused), "reused_provider_test_count": len(reused_ids),
+            "provider_evidence_sources": [item["evidence_source"] for item in reused],
             "reviews": reviews, "elapsed_seconds": time.monotonic() - started,
             "test_count": result.testsRun, "outcomes": outcomes, "acceptance": statuses}
         json.dump(record, artifact, indent=2)

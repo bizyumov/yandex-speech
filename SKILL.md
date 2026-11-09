@@ -33,6 +33,10 @@ Use the host's standard speech tool and addressed delivery for an ordinary voice
 
 Keep the user's literal saved voice/model/style. Ermil's `good` differs from `friendly`; incompatible choices must be diagnosed rather than silently substituted. Use the [complete voice catalog and refresh procedure](references/synthesis-provider-testing.md#complete-official-voice-catalog) to check API version, general/LiveTTS family, language and roles. Check the current official source before listing available voices or selecting an unfamiliar one; update the full list and routing catalog together when it changes. State the last verification date if the source cannot be checked. Ordinary host cleanup is not a raw-SSML interface.
 
+In Hermes, explicit XML pronunciation requests use this plugin's `yandex_speech_ssml` tool with one complete `ssml` speak document. Optional `voice`, `role`, `language`, `model` and `speed` choices override saved defaults; this operation uses REST v1 and rejects incompatible v3/LiveTTS choices. The built-in `text_to_speech` tool remains a plain/native-text interface. If the user explicitly requires that exact built-in tool with raw XML, report its limitation rather than claiming a different operation repaired it.
+
+On successful SSML generation, emit the returned `media_tag` FIELD VALUE verbatim in the final reply, outside JSON, quotes or code. Do not send the same audio through another tool. A custom tool result is not automatically recovered when the assistant omits that directive. A generated file does not establish delivery, hearing or speech in a connected Discord voice channel.
+
 Generate previews only when requested. For a requested quality comparison use the same complete text, label voice/style/route, retain the submitted markup with the audio and obtain a listening verdict. A fixed sample pack and mandatory listening are not catalog or release requirements. API success, file size or an STT round trip does not establish pronunciation quality. Preserve canonical written names separately from verified spoken aliases.
 
 ## Essential commands

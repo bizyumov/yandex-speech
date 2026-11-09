@@ -32,7 +32,11 @@ The plugin-specific voice/style leaves use the native CLI's `--force` option bec
 
 The user file `.config/yandex-speech/config.json` is relative to the active workspace. It overrides profile defaults and host voice/model/language hints. Credentials resolve in that same owning scope; another profile's ambient settings are excluded. Keep literal roles: Ermil supports `good`, while `friendly` belongs to compatible other voices.
 
-Use the standard host speech tool for ordinary voice replies. Audio generation, an addressed attachment/voice message and playback in a connected channel are different results. Verify the requested result; a generated file alone does not prove delivery or playback. Raw SSML is an explicit v1 skill operation, since ordinary host cleanup does not preserve XML.
+Use the standard host speech tool for ordinary voice replies. Audio generation, an addressed attachment/voice message and playback in a connected channel are different results. Verify the requested result; a generated file alone does not prove delivery or playback. For explicit XML pronunciation, the same plugin adds the scoped `yandex_speech_ssml` operation; the built-in speech tool itself does not preserve XML.
+
+Use `yandex_speech_ssml` with a complete `ssml` speak document and optional per-call voice/role/language/model/speed. It uses REST v1 and preserves compatible saved choices. Current profile defaults are read through the stock configuration API; no configuration is rewritten.
+
+The tool returns generated audio and a `media_tag`. The assistant must emit the field VALUE directly in its final response, outside JSON/code/quotes. The gateway then handles its ordinary voice attachment. This custom tool is outside Hermes0.23's built-in omission-recovery allowlist: copying JSON or omitting the directive does not send audio. Generation, delivery and hearing remain separate. This operation does not speak into a connected Discord voice channel.
 
 Native synthesis preserves existing nonempty files and symlinks, returns an artifact with its actual container extension and can publish a new sibling for an empty host allocation. File synthesis remains available through eligible REST routes without gRPC. Optional v3 PCM output requires compatible voice/settings and gRPC; PCM availability alone does not create a player.
 
