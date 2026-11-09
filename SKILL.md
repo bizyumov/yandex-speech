@@ -37,14 +37,15 @@ Generate previews only when requested. For a requested quality comparison use th
 
 ## Essential commands
 
-Replace `/absolute/skill` with the installed skill root. These commands work outside checkout.
+Set `YS` once to the installed skill directory (replace `<path-to-skill>` below). These commands work outside checkout.
 
 ```sh
-python /absolute/skill/scripts/speech_setup.py --check
-python /absolute/skill/scripts/transcribe.py ./recording.mp3 --mode async --diarize --timestamps --format srt --output ./out/recording.srt
-python /absolute/skill/scripts/transcribe.py --resume ./out/recording.job.json --format json --output ./out/recording.json
-python /absolute/skill/scripts/transcribe.py ./large.mp3 --mode async --api-version 3 --transport rest --split-inline --timestamps --format json --output ./out/partitioned.json
-python /absolute/skill/scripts/tts.py "Привет, мир" --voice ermil --emotion good --format oggopus --output ./out/reply.ogg
+YS='<path-to-skill>'
+python "$YS/scripts/speech_setup.py" --check
+python "$YS/scripts/transcribe.py" ./recording.mp3 --mode async --diarize --timestamps --format srt --output ./out/recording.srt
+python "$YS/scripts/transcribe.py" --resume ./out/recording.job.json --format json --output ./out/recording.json
+python "$YS/scripts/transcribe.py" ./large.mp3 --mode async --api-version 3 --transport rest --split-inline --timestamps --format json --output ./out/partitioned.json
+python "$YS/scripts/tts.py" "Привет, мир" --voice ermil --emotion good --format oggopus --output ./out/reply.ogg
 ```
 
 `--version` needs no credentials. Use `--help` for operation-specific controls. Recorded exports are TXT/JSON/SRT/VTT; SRT/VTT require genuine timing. Short arriving recognition exports TXT/JSON and is bounded to 240 seconds. Synthesis includes v1/v3 files, explicit LiveTTS and incremental v3 PCM; a PCM generator alone is not a playback sink.

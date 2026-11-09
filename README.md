@@ -28,13 +28,14 @@ Use the configured standard Hermes environment and plain `python`. The runtime o
 Set `YANDEX_SPEECH_API_KEY` through the owning runtime's secret mechanism. Keep credentials out of chat, command arguments and configuration JSON.
 
 ```sh
-python /absolute/skill/scripts/speech_setup.py --check
-python /absolute/skill/scripts/transcribe.py ./recording.mp3 --mode async --diarize --timestamps --format srt --output ./out/recording.srt
-python /absolute/skill/scripts/transcribe.py --resume ./out/recording.job.json --format json --output ./out/recording.json
-python /absolute/skill/scripts/tts.py "Привет, мир" --voice ermil --emotion good --format oggopus --output ./out/reply.ogg
+YS='<path-to-skill>'
+python "$YS/scripts/speech_setup.py" --check
+python "$YS/scripts/transcribe.py" ./recording.mp3 --mode async --diarize --timestamps --format srt --output ./out/recording.srt
+python "$YS/scripts/transcribe.py" --resume ./out/recording.job.json --format json --output ./out/recording.json
+python "$YS/scripts/tts.py" "Привет, мир" --voice ermil --emotion good --format oggopus --output ./out/reply.ogg
 ```
 
-Replace `/absolute/skill` with the installed skill root. Original inputs are preserved; replacing output requires `--overwrite`. The recovery pointer is `<output-stem>.job.json`. Commands work outside checkout. `--check` is local/read-only; only explicit `--probe-audio` submits an audio diagnostic.
+Set `YS` once to the installed skill directory by replacing `<path-to-skill>` above. Original inputs are preserved; replacing output requires `--overwrite`. The recovery pointer is `<output-stem>.job.json`. Commands work outside checkout. `--check` is local/read-only; only explicit `--probe-audio` submits an audio diagnostic.
 
 ## Preferences and limits
 
