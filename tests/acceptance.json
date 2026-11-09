@@ -188,7 +188,7 @@
   "feedback": {
     "schema_version": 1,
     "increment": "feedback",
-    "scope": "Shipping uploaded-recording, setup/preference and voice-quality feedback. Existing Discord is accepted. Live meeting recording, extra Discord modes, shared idle-default rollout and full phoneme tooling are deferred.",
+    "scope": "Shipping uploaded-recording, setup/preference and maintained voice/API/model catalog feedback. Voice previews are generated on request; a fixed sample pack and mandatory listening are not release gates. Existing Discord is accepted. Live meeting recording, extra Discord modes, shared idle-default rollout and full phoneme tooling are deferred.",
     "acceptance": {
       "AC21": {
         "offline": [
@@ -322,18 +322,6 @@
         ],
         "provider": [],
         "host": []
-      },
-      "AC55": {
-        "offline": [
-          "tests.test_voice_catalog"
-        ],
-        "provider": [
-          "tests.provider.test_voice_quality.LiveVoiceComparisonTests"
-        ],
-        "host": [],
-        "review": [
-          "voice-quality"
-        ]
       },
       "AC56": {
         "offline": [

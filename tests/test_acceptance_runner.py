@@ -58,8 +58,11 @@ class AcceptanceRunnerTests(unittest.TestCase):
         path = Path(__file__).with_name("acceptance.json")
         document = read_manifest(path, increment="feedback")
         self.assertEqual(set(document["acceptance"]), FEEDBACK_REQUIRED)
-        self.assertTrue({"AC21", "AC26", "AC27", "AC55", "AC61", "AC65", "AC66"} <= FEEDBACK_REQUIRED)
-        self.assertTrue({"AC59", "AC69", "AC70", "AC71", "AC72", "AC73"}.isdisjoint(FEEDBACK_REQUIRED))
+        self.assertTrue({"AC21", "AC26", "AC27", "AC61", "AC65", "AC66"} <= FEEDBACK_REQUIRED)
+        self.assertTrue({"AC55", "AC59", "AC69", "AC70", "AC71", "AC72", "AC73"}.isdisjoint(FEEDBACK_REQUIRED))
+        self.assertEqual(document["acceptance"]["AC65"]["offline"], ["tests.test_voice_catalog"])
+        reviews = {name for record in document["acceptance"].values() for name in record.get("review", [])}
+        self.assertEqual(reviews, {"telegram-delivery"})
 
     def test_feedback_missing_or_extra_deferred_requirement_is_rejected(self):
         from tests.__main__ import read_manifest

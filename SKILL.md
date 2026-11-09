@@ -31,9 +31,9 @@ Read `$HOME/.config/yandex-speech/config.json`, relative to the active workspace
 
 Use the host's standard speech tool and addressed delivery for an ordinary voice reply. Generating a file, sending a voice attachment and speaking in a connected channel are different results: verify the requested one. Do not replace an explicitly requested native-tool operation with a standalone script and call that route repaired. Respect recipient opt-outs and the host conversation policy.
 
-Keep the user's literal saved voice/model/style. Ermil's `good` differs from `friendly`; incompatible choices must be diagnosed rather than silently substituted. Use the [voice catalog and examples](references/synthesis-provider-testing.md) for v1 SSML or v3 general/LiveTTS. Ordinary host cleanup is not a raw-SSML interface.
+Keep the user's literal saved voice/model/style. Ermil's `good` differs from `friendly`; incompatible choices must be diagnosed rather than silently substituted. Use the [complete voice catalog and refresh procedure](references/synthesis-provider-testing.md#complete-official-voice-catalog) to check API version, general/LiveTTS family, language and roles. Check the current official source before listing available voices or selecting an unfamiliar one; update the full list and routing catalog together when it changes. State the last verification date if the source cannot be checked. Ordinary host cleanup is not a raw-SSML interface.
 
-For quality comparisons use the same complete text, label voice/style/route, retain the submitted markup with the audio and obtain a listening verdict. API success, file size or an STT round trip does not establish pronunciation quality. Preserve canonical written names separately from verified spoken aliases.
+Generate previews only when requested. For a requested quality comparison use the same complete text, label voice/style/route, retain the submitted markup with the audio and obtain a listening verdict. A fixed sample pack and mandatory listening are not catalog or release requirements. API success, file size or an STT round trip does not establish pronunciation quality. Preserve canonical written names separately from verified spoken aliases.
 
 ## Essential commands
 
