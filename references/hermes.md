@@ -46,6 +46,12 @@ The plugin feeds authorized decoded PCM from the existing Discord client into th
 
 This release retains the accepted conversation behavior. The stock one-shot player can pause reception during speech for echo protection. Additional simultaneous speaking/listening modes, progressive playback and live-meeting recording controls are follow-ups. Short recognition sessions remain bounded to 240 seconds.
 
+## Upgrade and rollback
+
+Record the working package, its checksum and the plugin's immutable commit before upgrading. Keep the owning profile's config, secret store and saved preferences. The runtime owner updates the complete package and plugin together; for an existing installation, the native plugin CLI supports `--force --ref COMMIT`, where COMMIT is a reviewed 40-character commit.
+
+To roll back, restore the recorded package and matching plugin revision, preserve those profile files, and verify the selected STT/TTS providers and ordinary speech path. Activate either direction only at a verified gateway quiet window. The skill/plugin rollback does not require changing Hermes itself.
+
 ## Compatibility wrappers and checks
 
 - `scripts/hermes-stt-wrapper.sh {input_path} {output_dir} {language}` processes the exact addressed input and writes `output_dir/transcript.txt`; path/status output stays off stdout.
