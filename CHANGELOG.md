@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+## 0.1.0 - 2026-11-09
+
 - Maintain the complete voice catalog with conditional API/model/language/role availability and a refresh procedure; generate optional previews on request. Use quoted installed-path examples with YS.
 
 - Add a profile-scoped `yandex_speech_ssml` plugin tool for XML pronunciation on stock Hermes, with live read-only preference resolution, owned Opus output and explicit final-response media delivery instructions; keep the built-in plain-text tool unchanged.
