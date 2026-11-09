@@ -57,7 +57,7 @@ Stock Hermes 0.23.0's standard TTS cleanup preserves the tested stress, pause, a
 
 ### Complete official voice catalog
 
-Verified against the official catalog on 2026-11-08 (34 current voices; implementation/table conformance checked). Primary language is the catalog's voice-training language, not an invented prohibition on every cross-language request. Realtime below is vendor availability; this skill does not implement a Realtime client.
+Verified against the official catalog on 2026-11-09 (34 current voices; implementation/table conformance checked). Primary language is the catalog's voice-training language, not an invented prohibition on every cross-language request. Realtime below is vendor availability; this skill does not implement a Realtime client.
 
 | Voice ID | Documented name | Primary language | Gender | Family | API availability | Roles | Default role |
 |---|---|---|---|---|---|---|---|
@@ -98,10 +98,20 @@ Verified against the official catalog on 2026-11-08 (34 current voices; implemen
 
 The official catalog marks Marina as its default. This skill retains alena as a separately identified legacy v1 compatibility choice; it is not an extra row in the current official catalog. Preserve explicit saved preferences rather than silently changing defaults.
 
+### Keep the catalog current
+
+This table is the voice list; sample clips are optional previews. Its API availability, model family, language and roles determine whether a requested selection can run.
+
+Before listing available voices or choosing an unfamiliar voice, check the current [official voice catalog](https://aistudio.yandex.ru/en/docs/speechkit/tts/voices). Recheck before every release and when the provider rejects a previously supported combination. Verify the whole catalog, including v1 versus v3 availability, general versus LiveTTS, roles/default roles and language; do not infer availability from a few successful audio requests.
+
+When the official catalog changes, update this complete table and `yandex_speech/tts_voices.py` together, record the verification date, and run `python -m unittest tests.test_voice_catalog tests.test_tts_routing`. Preserve separately labeled legacy choices. These tests check consistency between the installed list and routing; they do not fetch the upstream catalog or prove that it has not changed.
+
+If the official source cannot be checked, give the last verification date and say that current availability is unverified. Never silently substitute a different voice, API, family or role. Generate a short preview through the existing speech interface only when requested; there is no mandatory sample pack or catalog listening step.
+
 ### Agent procedure
 
 1. Reuse the saved voice preference. Ask for a preference only when none exists or the requested combination cannot work.
-2. For comparisons use the same short sentence, format and loudness; label each voice/model/role. Apply per-call choices instead of rewriting the active profile.
+2. When a comparison is requested, use the same short sentence, format and loudness; label each voice/model/role. Apply per-call choices instead of rewriting the active profile.
 3. Use explicit roles in demonstrations so an unrelated saved emotion cannot accidentally select an incompatible combination.
 4. Verify the actual method, voice/model/role, complete audio and delivery mode. Request a listening verdict when pronunciation or perceived quality is disputed.
 5. Keep canonical written terms separate from spoken aliases. Neither a successful HTTP response nor an STT round trip proves pronunciation quality.
@@ -110,6 +120,6 @@ User settings remain explicit call → HOME/workspace user file → native profi
 
 [SSML phonemes](https://aistudio.yandex.ru/en/docs/speechkit/tts/markup/ssml-supported-phonemes) · [Native text markup](https://aistudio.yandex.ru/en/docs/speechkit/tts/markup/tts-markup) · [Voices](https://aistudio.yandex.ru/ru/docs/speechkit/tts/voices#livetts) · [Models](https://aistudio.yandex.ru/ru/docs/speechkit/tts/models).
 
-## Listening check
+## Optional previews
 
-The release comparison produces labeled Ermil/Good plain versus SSML, Alexander/Good plain versus native markup, and the same ordinary phrase with Marina/Friendly and LiveTTS Sergey/Support. Provider MP3 and normalized WAV are retained separately. Compare the same logical text with the requested controls, keep client request metadata distinct from server acknowledgement, and record the listener verdict. IPA and X-SAMPA examples above remain intentionally different transcriptions.
+Generate previews on request using the selected voice, supported API/model and existing CLI/Python/native speech interface. Preserve the submitted text and label the settings. Obtain a listening verdict only for a requested comparison or disputed pronunciation; a fixed six-clip exercise is not a catalog or release requirement.

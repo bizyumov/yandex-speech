@@ -17,7 +17,7 @@ ROOT=Path(__file__).resolve().parent.parent
 REQUIRED={f"AC{i:02d}" for i in range(1,21)}
 
 
-FEEDBACK_REQUIRED = {f"AC{i:02d}" for i in (*range(21, 29), *range(49, 59), 61, 65, 66)}
+FEEDBACK_REQUIRED = {f"AC{i:02d}" for i in (*range(21, 29), *range(49, 55), *range(56, 59), 61, 65, 66)}
 
 def read_manifest(path, phase=1, increment=None):
     document = json.loads(Path(path).read_text())
