@@ -52,7 +52,9 @@ Native text markup is distinct from XML SSML and is supported for Russian text i
 
 Beginning/end pauses can be ignored. Markup is a synthesis cue; compare complete sentences rather than treating it as a sound generator.
 
-Stock Hermes 0.23.0's standard TTS cleanup preserves the tested stress, pause, accented-tag and native phoneme examples, but removes Markdown bold and corrupts SSML closing tags. For standard Hermes replies use `<[accented]>` instead of Markdown emphasis. Run explicit SSML through this skill's CLI/Python SSML operation. Never claim that raw XML passed intact through a host cleaner without testing that route.
+In Hermes, use the plugin's `yandex_speech_ssml` tool for explicit XML pronunciation. It accepts one complete `ssml` speak document plus optional voice/role/language/model/speed and calls REST v1 after normal tool authorization. Copy its returned `media_tag` value verbatim into the final response; JSON copied wholesale does not send the attachment. The tool generates audio and does not claim delivery or hearing.
+
+The built-in `text_to_speech` tool remains a plain/native-text operation. Its formatter removes Markdown bold and damages XML closing tags before the provider receives them. It preserves the tested stress, pause, accented-tag and native phoneme examples; use `<[accented]>` instead of Markdown emphasis there. The explicit CLI/Python SSML commands above remain available outside the host tool workflow. Neither operation is a repair of the built-in tool's raw-XML behavior.
 
 ## Voice and role selection
 

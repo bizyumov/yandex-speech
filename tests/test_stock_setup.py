@@ -76,13 +76,17 @@ assert config["stt"]["yandex"]["language"]=="ru-RU"
 assert config["tts"]["provider"]=="yandex" and config["tts"]["voice"]=="ermil"
 assert config["tts"]["yandex"]["role"]=="good"
 assert config["model"]["default"]=="unrelated-model"
-print(json.dumps({"stt_registered":True,"tts_registered":True,"settings_verified":True}))
+from tools.registry import registry as tool_registry
+ssml=tool_registry.get_entry("yandex_speech_ssml")
+assert ssml is not None
+assert Path(inspect.getfile(ssml.handler)).resolve().is_relative_to(Path(sys.argv[1]).resolve())
+print(json.dumps({"stt_registered":True,"tts_registered":True,"ssml_registered":True,"settings_verified":True}))
 """
     result = subprocess.run([sys.executable, "-c", program, str(plugin.resolve()), str(pythonpath)],
         cwd=outside, env=env, capture_output=True, text=True, timeout=60)
     case.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-5000:])
     case.assertEqual(json.loads(result.stdout),
-        {"stt_registered": True, "tts_registered": True, "settings_verified": True})
+        {"stt_registered": True, "tts_registered": True, "ssml_registered": True, "settings_verified": True})
     before_repeat = config.read_bytes()
     for command in commands:
         run(*command)

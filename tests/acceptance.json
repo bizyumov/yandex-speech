@@ -307,12 +307,13 @@
         "offline": [
           "tests.test_tts_text",
           "tests.test_tts_ssml",
-          "tests.test_tts_boundaries"
+          "tests.test_tts_boundaries",
+          "tests.test_hermes_ssml"
         ],
-        "provider": [
-          "tests.provider.test_voice_quality.LiveVoiceComparisonTests"
-        ],
-        "host": []
+        "provider": [],
+        "host": [
+          "tests.provider.test_hermes_ssml.LiveHermesSSMLTests.test_registered_ssml_tool_preserves_markup_and_voice_media"
+        ]
       },
       "AC54": {
         "offline": [
