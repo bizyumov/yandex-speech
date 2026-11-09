@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Maintain the complete voice catalog with conditional API/model/language/role availability and a refresh procedure; generate optional previews on request. Use quoted installed-path examples with YS.
+
 - Add a profile-scoped `yandex_speech_ssml` plugin tool for XML pronunciation on stock Hermes, with live read-only preference resolution, owned Opus output and explicit final-response media delivery instructions; keep the built-in plain-text tool unchanged.
 
 - Add explicit read-only account/key inspection and setup planning, plus scoped API/static-key creation into exclusive protected files; keep grant/expiry evidence separate from actual method execution and never retry uncertain creation. Correct readiness to report delivered recording partition support.
@@ -33,7 +35,7 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 - Establish the 0.1.0 development baseline: MIT, skill documentation, optional dependency profiles, HOME/workspace configuration and acceptance coverage.
 - Add gRPC v3 recording recognition with private job receipts, restart recovery, complete result drain, original-media timing and two-speaker exports.
-- Add bounded arriving-audio preparation and external-EOU completion, cancellation, previews and a native Hermes 0.22.5 STT provider.
+- Add bounded arriving-audio preparation and external-EOU completion, cancellation, previews and a native Hermes 0.23.0 STT provider.
 - Preserve explicit REST and synthesis entry points; correct service-account folder handling, raw/literary provenance, wrapper defaults and output preservation.
 
-There is no public release tag yet. Complete REST/storage fallback, full spoken-turn integration and public rollout remain later increments.
+Live meeting recording and additional Discord conversation modes remain next-release work.
