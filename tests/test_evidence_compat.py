@@ -47,6 +47,29 @@ class EvidenceCompatibilityTests(unittest.TestCase):
         self.assertFalse(proof["host_evidence_reused"])
         self.assertEqual(self.document["outcomes"][self.host], "passed")
 
+    def test_calendar_version_projection_retains_original_receipt_and_excludes_hosts(self):
+        from copy import deepcopy
+        original = deepcopy(self.document)
+        for value in ("2026.11.9", "2026.11.9-2"):
+            with self.subTest(value=value):
+                (self.root / "VERSION").write_text(value + "\n")
+                outcomes, proof = self.check()
+                self.assertEqual(outcomes, {self.case: "passed"})
+                self.assertEqual(proof["version_metadata"], {"origin": "0.1.0", "current": value})
+                self.assertFalse(proof["host_evidence_reused"])
+                self.assertEqual(self.document, original)
+
+    def test_calendar_version_projection_rejects_invalid_identity_or_changed_code(self):
+        for value in ("0.2.0", "2026.02.9", "2026.2.30", "2026.11.9-0", "2026.11.9 extra"):
+            with self.subTest(value=value):
+                (self.root / "VERSION").write_text(value + "\n")
+                with self.assertRaises(ValueError):
+                    self.check()
+        (self.root / "VERSION").write_text("2026.11.9\n")
+        (self.root / "yandex_speech/core.py").write_bytes(b"changed implementation")
+        with self.assertRaises(ValueError):
+            self.check()
+
     def test_changed_core_fixture_dependency_or_missing_input_is_rejected(self):
         for name in ("yandex_speech/core.py", "tests/provider/test_rest_recording.py",
                      "requirements.txt", "VERSION"):

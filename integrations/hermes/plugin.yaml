@@ -1,5 +1,5 @@
 name: yandex-speech
-version: 0.1.0
+version: 2026.11.9
 description: Yandex SpeechKit native transcription, file/PCM synthesis and explicit SSML voice tool
 author: Boris Izyumov
 license: MIT

@@ -53,6 +53,10 @@ For XML pronunciation in Hermes, the plugin supplies `yandex_speech_ssml` and th
 
 [Hermes connection](references/hermes.md) uses the native plugin/configuration CLI. [Account/key setup](references/yandex-cloud-setup.md) covers read-only inspection, a setup plan and explicitly authorized key creation into a new protected file. No Hermes configuration backend or platform fork is required.
 
+## Versioning
+
+Releases use YYYY.M.D[-N], with unpadded month/day and an optional revision suffix, for example 2026.11.9. VERSION is authoritative for package, CLI, plugin and release identity. Release tags use the same identifier.
+
 ## Checks
 
 ```sh
