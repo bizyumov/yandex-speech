@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Default account-key responses to generated files in `~/secrets`, retain no-overwrite behavior and ordinary filesystem permissions, and add separate offline `apply-key` env application with exact credential mappings, shared folder-ID preservation and gateway startup guidance.
+
 ## 2026.11.9 - 2026-11-09
 
 - Maintain the complete voice catalog with conditional API/model/language/role availability and a refresh procedure; generate optional previews on request. Use quoted installed-path examples with YS.

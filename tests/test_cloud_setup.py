@@ -89,7 +89,9 @@ class CloudSetupTests(unittest.TestCase):
                             expires_at="2099-01-01T00:00:00Z")
         saved = json.loads(self.destination.read_text())
         self.assertEqual(saved["secret"], "synthetic-one-time-secret")
-        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), 0o600)
+        reference = self.home / "ordinary-file"
+        reference.touch()
+        self.assertEqual(stat.S_IMODE(self.destination.stat().st_mode), stat.S_IMODE(reference.stat().st_mode))
         self.assertNotIn("synthetic-one-time-secret", json.dumps(report))
         self.assertEqual(report["key"]["expiresAt"], "2099-01-01T00:00:00Z")
         posts = [call for call in self.session.calls if call[0] == "POST"]
@@ -110,20 +112,19 @@ class CloudSetupTests(unittest.TestCase):
             if not symlink:
                 self.assertEqual(target.read_text(), "operator-owned")
 
-    def test_private_directory_is_required_before_any_management_call(self):
-        folder = self.home / "exposed"
+    def test_directory_modes_do_not_restrict_creation(self):
+        folder = self.home / "ordinary"
         folder.mkdir(mode=0o755)
         folder.chmod(0o755)
-        with self.assertRaises(SpeechError):
-            create_key(self.client, "sa-test", "both", folder / "key.json")
-        self.assertEqual(self.session.calls, [])
+        report = create_key(self.client, "sa-test", "both", folder / "key.json")
+        self.assertEqual(report["status"], "created")
 
-    def test_symlinked_parent_is_refused(self):
+    def test_symlinked_parent_uses_the_selected_location(self):
         link = self.home / "redirect"
         link.symlink_to(self.home, target_is_directory=True)
-        with self.assertRaises(SpeechError):
-            create_key(self.client, "sa-test", "both", link / "key.json")
-        self.assertEqual(self.session.calls, [])
+        report = create_key(self.client, "sa-test", "both", link / "key.json")
+        self.assertEqual(report["status"], "created")
+        self.assertTrue((self.home / "key.json").is_file())
 
     def test_unreadable_inventory_never_creates_a_key(self):
         self.session.deny_inventory = True
@@ -255,3 +256,70 @@ class CloudSetupTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.assertEqual(sum(call[0] == "POST" for call in self.session.calls), 1)
         self.assertEqual(self.session.keys[0]["id"], "old")
+
+    def test_default_destination_is_generated_under_user_secrets(self):
+        with patch.dict(os.environ, {"HOME": str(self.home)}):
+            planned = prepare_key(self.client, "sa-test", "both")
+            self.assertFalse((self.home / "secrets").exists())
+            first = create_key(self.client, "sa-test", "both")
+            second = create_key(self.client, "sa-test", "both")
+        for report in (planned, first, second):
+            self.assertEqual(Path(report["secret_file"]).parent, self.home / "secrets")
+        self.assertNotEqual(first["secret_file"], second["secret_file"])
+        self.assertTrue(Path(first["secret_file"]).is_file())
+
+    def test_creation_race_never_overwrites_the_newly_existing_file(self):
+        from yandex_speech.cloud_setup import _plan
+        def plan(*args):
+            result = _plan(*args)
+            self.destination.write_text("intervening file")
+            return result
+        with patch("yandex_speech.cloud_setup._plan", side_effect=plan):
+            with self.assertRaises(SpeechError):
+                create_key(self.client, "sa-test", "both", self.destination)
+        self.assertEqual(self.destination.read_text(), "intervening file")
+        self.assertFalse(any(call[0] == "POST" for call in self.session.calls))
+
+    def test_cli_creation_without_secret_out_returns_a_generated_filename(self):
+        from yandex_speech.readiness import main
+        output = io.StringIO()
+        with patch.dict(os.environ, {"HOME": str(self.home), "TEST_MANAGEMENT_TOKEN": "synthetic-management-token"}):
+            with patch("requests.Session", return_value=self.session), contextlib.redirect_stdout(output):
+                status = main(["create-key", "--service-account-id", "sa-test",
+                               "--management-token-env", "TEST_MANAGEMENT_TOKEN"])
+        self.assertEqual(status, 0)
+        saved = Path(json.loads(output.getvalue())["secret_file"])
+        self.assertEqual(saved.parent, self.home / "secrets")
+        self.assertTrue(saved.is_file())
+
+    def test_execute_only_ancestor_as_an_unprivileged_process(self):
+        import pwd
+        import subprocess
+        import sys
+        account = pwd.getpwnam("frodo") if os.geteuid() == 0 else None
+        traverse = self.home / "traverse"
+        target = traverse / "destination"
+        self.home.chmod(0o755)
+        traverse.mkdir()
+        target.mkdir()
+        target.chmod(0o777)
+        traverse.chmod(0o111)
+        def demote():
+            os.setgroups(os.getgrouplist(account.pw_name, account.pw_gid))
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+        program = (
+            "from pathlib import Path; import sys; "
+            "from tests.test_cloud_setup import FakeSession; "
+            "from yandex_speech.cloud_setup import ManagementClient,create_key; "
+            "p=Path(sys.argv[1]); "
+            "r=create_key(ManagementClient('synthetic-token',_session=FakeSession()),'sa-test','both',p); "
+            "assert r['status']=='created'; assert p.exists()"
+        )
+        try:
+            result = subprocess.run([sys.executable, "-c", program, str(target / "key.json")],
+                                    capture_output=True, text=True,
+                                    preexec_fn=demote if account is not None else None)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            traverse.chmod(0o755)

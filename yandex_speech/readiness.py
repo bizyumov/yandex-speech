@@ -92,12 +92,12 @@ def check(*, _context=None, _environment=None, _probe=None):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in {"inspect-account", "prepare-key", "create-key"}:
+    if argv and argv[0] in {"inspect-account", "prepare-key", "create-key", "apply-key"}:
         from .cloud_setup import main as setup_main
         return setup_main(argv)
     if argv[:1] == ["check"]:
         argv = argv[1:]
-    parser = argparse.ArgumentParser(description=__doc__, epilog="Account setup: inspect-account, prepare-key or create-key --help. Hermes configuration uses the native CLI.")
+    parser = argparse.ArgumentParser(description=__doc__, epilog="Account setup: inspect-account, prepare-key, create-key or apply-key --help. Other Hermes configuration uses the native CLI.")
     parser.add_argument("--check", action="store_true", help="Check prerequisites without changing configuration")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--probe-audio", type=Path, help="Explicitly submit this synthetic recording; incurs API usage")

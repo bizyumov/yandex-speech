@@ -253,7 +253,8 @@
       },
       "AC27": {
         "offline": [
-          "tests.test_cloud_setup"
+          "tests.test_cloud_setup",
+          "tests.test_key_env"
         ],
         "provider": [],
         "host": []
@@ -261,7 +262,8 @@
       "AC28": {
         "offline": [
           "tests.test_readiness",
-          "tests.test_cloud_setup"
+          "tests.test_cloud_setup",
+          "tests.test_key_env"
         ],
         "provider": [],
         "host": []
