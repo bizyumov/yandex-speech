@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Add S3 bucket/prefix setup with skill defaults, higher-priority env coordinates, scoped access probes and bucket creation via static credentials; keep endpoint in skill configuration instead of env.
+
 - Default account-key responses to generated files in `~/secrets`, retain no-overwrite behavior and ordinary filesystem permissions, and add separate offline `apply-key` env application with exact credential mappings, shared folder-ID preservation and gateway startup guidance.
 
 ## 2026.11.9 - 2026-11-09

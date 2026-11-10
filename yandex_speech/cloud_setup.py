@@ -26,7 +26,7 @@ SCOPES = {"stt": ["yc.ai.speechkitStt.execute"],
 ROLES = {"stt": ["ai.speechkit-stt.user"], "tts": ["ai.speechkit-tts.user"],
          "both": ["ai.speechkit-stt.user", "ai.speechkit-tts.user"],
          "s3-static": ["storage.uploader"]}
-COMMANDS = ("inspect-account", "prepare-key", "create-key", "apply-key")
+COMMANDS = ("inspect-account", "prepare-key", "create-key", "apply-key", "setup-storage")
 
 
 def _timestamp(value):
@@ -300,26 +300,34 @@ def main(argv=None):
     auth.add_argument("--management-profile", help="Existing authorized yc profile")
     auth.add_argument("--management-token-env", help="Name of the environment variable containing a management IAM token")
     parser.add_argument("--secret-out", type=Path, help="New response file; default: generated filename in ~/secrets")
-    parser.add_argument("--secret-file", type=Path, help="Saved response JSON for apply-key")
-    parser.add_argument("--env-file", type=Path, help="Agent's own env file for apply-key")
+    parser.add_argument("--secret-file", type=Path, help="Saved response JSON for apply-key or setup-storage")
+    parser.add_argument("--env-file", type=Path, help="Agent's own env file")
+    parser.add_argument("--s3-bucket", help="Bucket returned by setup-storage; existing env value takes priority")
+    parser.add_argument("--s3-prefix", help="Prefix returned by setup-storage; existing env value takes priority")
     parser.add_argument("--expires-at", help="Explicit API-key expiry in RFC3339")
     args = parser.parse_args(argv)
-    if args.operation == "apply-key":
-        if args.secret_file is None or args.env_file is None:
-            parser.error("apply-key requires --secret-file and --env-file")
+    if args.operation in {"apply-key", "setup-storage"}:
+        if args.env_file is None or (args.operation == "apply-key" and args.secret_file is None):
+            parser.error("apply-key requires --secret-file and --env-file; setup-storage requires --env-file")
         if any((args.service_account_id, args.management_profile, args.management_token_env,
                 args.secret_out, args.expires_at)):
-            parser.error("apply-key uses saved credentials only; do not supply management or creation options")
+            parser.error("apply-key/setup-storage use saved credentials; do not supply management or creation options")
+        if args.operation != "apply-key" and (args.s3_bucket is not None or args.s3_prefix is not None):
+            parser.error("--s3-bucket and --s3-prefix belong to apply-key; setup-storage selects from env and skill defaults")
     else:
-        if args.secret_file is not None or args.env_file is not None:
-            parser.error("--secret-file and --env-file belong to apply-key")
+        if any((args.secret_file, args.env_file, args.s3_bucket, args.s3_prefix)):
+            parser.error("env application and storage setup options do not belong to account operations")
         if not args.service_account_id or not (args.management_profile or args.management_token_env):
             parser.error("account operations require --service-account-id and management-profile or management-token-env")
         if args.operation == "inspect-account" and (args.secret_out is not None or args.expires_at is not None):
             parser.error("inspection does not take secret-output or expiry options")
     try:
         if args.operation == "apply-key":
-            report = apply_key(args.secret_file, args.env_file)
+            report = apply_key(args.secret_file, args.env_file,
+                               s3_bucket=args.s3_bucket, s3_prefix=args.s3_prefix)
+        elif args.operation == "setup-storage":
+            from .storage_setup import setup_storage
+            report = setup_storage(args.env_file, args.secret_file)
         else:
             _validate(args.service_account_id, args.purpose, args.expires_at)
             if args.operation != "inspect-account":

@@ -223,7 +223,7 @@ class YandexTranscriptionProvider(TranscriptionProvider):
                 adapter[target]=value
         if language:
             adapter["language_code"]=language
-        names = ("YANDEX_CLOUD_FOLDER_ID", "YANDEX_SPEECH_S3_BUCKET", "YANDEX_SPEECH_S3_ENDPOINT",
+        names = ("YANDEX_CLOUD_FOLDER_ID", "YANDEX_SPEECH_S3_BUCKET",
                  "YANDEX_SPEECH_S3_PREFIX", "YANDEX_SPEECH_AWS_ACCESS_KEY_ID",
                  "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY")
         environment = ({name: value for name in names if (value := profile_secret(self.workspace, name))}

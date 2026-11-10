@@ -296,7 +296,14 @@ class CloudSetupTests(unittest.TestCase):
         import pwd
         import subprocess
         import sys
-        account = pwd.getpwnam("frodo") if os.geteuid() == 0 else None
+        account = None
+        if os.geteuid() == 0:
+            import grp
+            runtime_gid = Path(sys.prefix).stat().st_gid
+            members = set(grp.getgrgid(runtime_gid).gr_mem)
+            candidates = [item for item in pwd.getpwall()
+                          if item.pw_uid > 0 and (item.pw_name in members or item.pw_gid == runtime_gid)]
+            account = candidates[0] if candidates else pwd.getpwnam("nobody")
         traverse = self.home / "traverse"
         target = traverse / "destination"
         self.home.chmod(0o755)

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 
 from .errors import SpeechError
 
@@ -51,14 +52,52 @@ def _env_text(original, values):
     return "".join(lines)
 
 
-def apply_key(secret_file, env_file):
+def _load_response(source):
+    try:
+        with Path(source).expanduser().open(encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, ValueError):
+        raise SpeechError("CONFIG", "could not read a saved key JSON response") from None
+
+
+def _env_values(text):
+    names = {"YANDEX_SPEECH_S3_BUCKET", "YANDEX_SPEECH_S3_PREFIX",
+             "YANDEX_SPEECH_AWS_ACCESS_KEY_ID", "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"}
+    result = {}
+    for line in text.splitlines():
+        match = re.match(r"^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$", line)
+        if match is None or match[1] not in names:
+            continue
+        raw = match[2].strip()
+        try:
+            if raw[:1] in {"'", '"'}:
+                tokens = shlex.split(raw, comments=True)
+                if len(tokens) != 1:
+                    raise ValueError()
+                value = tokens[0]
+            else:
+                value = re.split(r"[ \t]+#", raw, maxsplit=1)[0].strip()
+        except ValueError:
+            raise SpeechError("CONFIG", "could not parse a selected storage env setting") from None
+        result[match[1]] = value
+    return result
+
+
+def read_env_values(path):
+    try:
+        source = Path(path).expanduser()
+        return _env_values(source.read_text(encoding="utf-8")) if source.exists() else {}
+    except (OSError, UnicodeError):
+        raise SpeechError("CONFIG", "could not read the selected env file") from None
+
+
+def apply_key(secret_file, env_file, *, s3_bucket=None, s3_prefix=None):
     source = Path(secret_file).expanduser().absolute()
     target = Path(env_file).expanduser().absolute()
     try:
         if target.exists() and source.samefile(target):
             raise SpeechError("CONFIG", "secret response and env destination must be different files")
-        with source.open(encoding="utf-8") as stream:
-            response = json.load(stream)
+        response = _load_response(source)
     except (OSError, ValueError):
         raise SpeechError("CONFIG", "could not read a saved key JSON response") from None
     values = _credential_variables(response)
@@ -67,6 +106,13 @@ def apply_key(secret_file, env_file):
         with os.fdopen(fd, "r+", encoding="utf-8", newline="") as stream:
             fcntl.flock(stream, fcntl.LOCK_EX)
             original = stream.read()
+            existing = _env_values(original)
+            for name, value in (("YANDEX_SPEECH_S3_BUCKET", s3_bucket),
+                                ("YANDEX_SPEECH_S3_PREFIX", s3_prefix)):
+                if value is not None and name not in existing:
+                    if not isinstance(value, str) or not value.strip() or any(c in value for c in "\r\n\0"):
+                        raise SpeechError("CONFIG", "storage settings must be nonempty single-line strings")
+                    values[name] = value
             updated = _env_text(original, values)
             if updated != original:
                 stream.seek(0)

@@ -42,11 +42,33 @@ Assignments are placed beneath this exact comment (the requested section name is
 | `YANDEX_SPEECH_AWS_ACCESS_KEY_ID` | `accessKey.keyId` in a saved static-storage-key response. |
 | `YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY` | `secret` in that static-storage-key response. |
 | `YANDEX_CLOUD_FOLDER_ID` | Existing shared setting, possibly used by Yandex Search: preserve it unchanged and in place. The key response does not supply a replacement. Service-account SpeechKit calls do not send it. |
-| `YANDEX_SPEECH_S3_BUCKET` | Existing selected bucket setting; neither key helper creates or selects a bucket. Preserve it. |
-| `YANDEX_SPEECH_S3_ENDPOINT` | Existing storage endpoint setting; preserve it. |
-| `YANDEX_SPEECH_S3_PREFIX` | Existing object-prefix setting; preserve it. |
+| `YANDEX_SPEECH_S3_BUCKET` | Selected bucket override. Without it, setup uses the skill default template `yandex-speech-<service-account-id>`. Check/setup this exact bucket. |
+| Endpoint | Skill default `https://storage.yandexcloud.net`; configurable through non-secret skill config/CLI. `YANDEX_SPEECH_S3_ENDPOINT` is no longer read or written. |
+| `YANDEX_SPEECH_S3_PREFIX` | Selected prefix override. Without it, use the skill default `speechkit`. Check/setup this exact prefix. |
 
-Applying an API key preserves the two storage-key variables; applying a storage key preserves the SpeechKit API key. Bucket/endpoint/prefix come from the selected storage configuration, not the IAM key-creation response.
+Applying an API key preserves the two storage-key variables; applying a storage key preserves the SpeechKit API key. Existing bucket/prefix assignments have higher priority than skill defaults (and saved skill configuration), while an explicit recognition call can still select its requested target. Existing `YANDEX_CLOUD_FOLDER_ID` and unrelated env lines are left in place.
+
+## Set up Object Storage with the static key
+
+After saving the static-key response, run:
+
+```sh
+python scripts/speech_setup.py setup-storage --secret-file /returned/path/static-key.json --env-file "$HERMES_HOME/.env"
+```
+
+For already configured bucket and credentials, the saved-key option can be omitted: the command uses the static pair from that same env file. A generated default bucket name needs the service-account ID from the saved static response. The command requires the optional boto3 storage dependency, reusing the skill's S3 client. It performs no cloud-folder or all-bucket listing and does not edit env.
+
+Selection is explicit: the selected env's `YANDEX_SPEECH_S3_BUCKET` and `YANDEX_SPEECH_S3_PREFIX` override the built-in bucket template and prefix. Endpoint is resolved from the skill, not env. The helper checks exactly that bucket; on a confirmed not-found response it creates that same name through S3 `CreateBucket`. Denial is reported as denial, never treated as absence or permission to choose another bucket. Static credentials target the service account's own folder without reusing the possibly unrelated search folder ID.
+
+S3 prefixes are object-key namespaces. The helper lists only the selected prefix; if it is absent, it creates a zero-byte `prefix/` marker at that exact location without overwriting an existing object. It verifies list/write/read/delete access with a unique synthetic probe beneath that prefix, preserving existing objects and deleting only its own probe version. The marker remains to materialize the prefix. Errors never grant roles or redirect to another target.
+
+On success, it returns `bucket`, `prefix`, `endpoint`, whether the bucket was created, and the access-probe result. Carry those returned bucket/prefix values to the **separate** env helper:
+
+```sh
+python scripts/speech_setup.py apply-key --secret-file /returned/path/static-key.json --env-file "$HERMES_HOME/.env" --s3-bucket RETURNED_BUCKET --s3-prefix RETURNED_PREFIX
+```
+
+`apply-key` records missing bucket/prefix assignments under the same requested section, preserving any already configured env choices. It never writes an endpoint variable. Creation of keys, S3 setup and env application are separate, observable steps; do not invent missing storage coordinates or infer that an API-key creation permission grants storage access.
 
 **Gateway environment variables load at startup. Writing `.env` does not update the running gateway.** Until its next start, the agent must explicitly supply the new variables for immediate speech generation. Read the saved response locally, take `secret` as `YANDEX_SPEECH_API_KEY`, and pass it in the generation subprocess's environment (using `sys.executable` for a Python child), without putting the value in argv, chat or command output. For storage, use the two static-key mappings above. An env change in a terminal child does not update the parent gateway or its built-in speech tool. Do not claim the running gateway adopted a new key merely because `apply-key` succeeded.
 

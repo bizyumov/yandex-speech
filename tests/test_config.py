@@ -30,6 +30,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.value("api_version"), "auto")
         self.assertEqual(settings.path, self.config)
 
+    def test_storage_env_overrides_saved_defaults_but_endpoint_comes_from_skill(self):
+        self.put({"speech": {"object_storage": {"bucket": "saved-bucket", "prefix": "saved-prefix"}}})
+        settings = resolve_settings(_context=self.context, _environment={
+            "YANDEX_SPEECH_S3_BUCKET": "env-bucket", "YANDEX_SPEECH_S3_PREFIX": "env/prefix",
+            "YANDEX_SPEECH_S3_ENDPOINT": "https://ignored.invalid"})
+        self.assertEqual(settings.value("object_storage.bucket"), "env-bucket")
+        self.assertEqual(settings.value("object_storage.prefix"), "env/prefix")
+        self.assertEqual(settings.value("object_storage.endpoint"), "https://storage.yandexcloud.net")
+        self.assertEqual(settings.sources["object_storage.bucket"], "environment")
+
     def test_call_file_adapter_builtin_precedence(self):
         self.put({"speech": {"language_code": "en-US",
                             "tts": {"default_voice": "configured"},
@@ -39,7 +49,7 @@ class ConfigTests(unittest.TestCase):
                                     _adapter={"language_code": "ru-RU",
                                               "tts": {"default_voice": "profile"}})
         self.assertEqual(settings.value("tts.default_voice"), "configured")
-        self.assertEqual(settings.value("object_storage.bucket"), "configured")
+        self.assertEqual(settings.value("object_storage.bucket"), "legacy")
         self.assertEqual(settings.value("language_code"), "en-US")
         self.assertEqual(settings.sources["tts.default_voice"], "config")
         explicit = resolve_settings(_context=self.context, _environment=env,

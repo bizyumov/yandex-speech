@@ -11,6 +11,8 @@ from typing import Mapping
 
 from .errors import SpeechError
 
+STORAGE_BUCKET_TEMPLATE = "yandex-speech-{service_account_id}"
+
 DEFAULTS = {
     "default_format": "json", "enable_diarization": False, "enable_timestamps": False,
     "language_code": "ru-RU", "transport": "auto", "api_version": "auto",
@@ -37,7 +39,6 @@ ENV_DEFAULTS = {
     "HERMES_TTS_VOICE": ("tts", "default_voice"),
     "HERMES_TTS_LANG": ("tts", "default_lang"),
     "YANDEX_SPEECH_S3_BUCKET": ("object_storage", "bucket"),
-    "YANDEX_SPEECH_S3_ENDPOINT": ("object_storage", "endpoint"),
     "YANDEX_SPEECH_S3_PREFIX": ("object_storage", "prefix"),
 }
 
@@ -147,10 +148,11 @@ def resolve_settings(*, _context: RuntimeContext | None = None,
     for name, (group, key) in ENV_DEFAULTS.items():
         if env.get(name):
             aliases.setdefault(group, {})[key] = env[name]
+    storage_aliases = {"object_storage": aliases.pop("object_storage")} if "object_storage" in aliases else {}
     result, sources = {}, {}
     for values, label in [(DEFAULTS, "builtin"), (aliases, "environment"),
                           (_adapter or {}, "adapter"), (file_values, "config"),
-                          (_explicit or {}, "call")]:
+                          (storage_aliases, "environment"), (_explicit or {}, "call")]:
         _validate(values)
         _merge(result, copy.deepcopy(values), sources, label)
     return Settings(result, sources, path)

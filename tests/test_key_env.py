@@ -142,3 +142,21 @@ class ApplyKeyTests(unittest.TestCase):
         apply_key(self.source, self.target)
         assignment = self.target.read_text().splitlines()[1]
         self.assertEqual(json.loads(assignment.split("=", 1)[1]), value)
+
+    def test_storage_settings_from_setup_are_added_without_overriding_env_choices(self):
+        self.target.write_text("YANDEX_SPEECH_S3_BUCKET=chosen-bucket\n"
+                               "export YANDEX_SPEECH_S3_PREFIX='chosen/prefix'\n"
+                               "YANDEX_CLOUD_FOLDER_ID=shared-folder\n")
+        apply_key(self.source, self.target, s3_bucket="default-bucket", s3_prefix="speechkit")
+        text = self.target.read_text()
+        self.assertIn("YANDEX_SPEECH_S3_BUCKET=chosen-bucket\n", text)
+        self.assertIn("export YANDEX_SPEECH_S3_PREFIX='chosen/prefix'\n", text)
+        self.assertNotIn("default-bucket", text)
+        self.assertIn("YANDEX_CLOUD_FOLDER_ID=shared-folder", text)
+        self.target.unlink()
+        report = apply_key(self.source, self.target, s3_bucket="default-bucket", s3_prefix="speechkit")
+        text = self.target.read_text()
+        self.assertIn('YANDEX_SPEECH_S3_BUCKET="default-bucket"', text)
+        self.assertIn('YANDEX_SPEECH_S3_PREFIX="speechkit"', text)
+        self.assertNotIn("YANDEX_SPEECH_S3_ENDPOINT", text)
+        self.assertIn("YANDEX_SPEECH_S3_BUCKET", report["updated_variables"])
