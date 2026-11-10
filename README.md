@@ -51,7 +51,7 @@ Choose a supported voice/style using the [voice catalog and pronunciation exampl
 
 For XML pronunciation in Hermes, the plugin supplies `yandex_speech_ssml` and the normal voice-attachment delivery protocol. The built-in speech tool retains its plain-text behavior; see [the SSML route and delivery rule](references/hermes.md#preferences-and-voice-delivery).
 
-[Hermes connection](references/hermes.md) uses the native plugin/configuration CLI. [Account/key setup](references/yandex-cloud-setup.md) covers read-only inspection, a setup plan and explicitly authorized key creation into a new protected file. No Hermes configuration backend or platform fork is required.
+[Hermes connection](references/hermes.md) uses the native plugin/configuration CLI. [Account/key setup](references/yandex-cloud-setup.md) covers read-only inspection, a setup plan, authorized key creation into a generated file in `~/secrets`, and a separate `apply-key` command for the agent's env. Existing secret-response files are never overwritten; gateway variables load at startup. No Hermes configuration backend or platform fork is required.
 
 ## Versioning
 

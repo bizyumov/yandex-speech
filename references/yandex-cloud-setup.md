@@ -10,16 +10,67 @@ Management uses either an existing named `yc` profile or `--management-token-env
 
 ```sh
 python scripts/speech_setup.py inspect-account --service-account-id SA_ID --management-profile PROFILE
-mkdir -m 700 /PRIVATE/new-speech-keys
-python scripts/speech_setup.py prepare-key --service-account-id SA_ID --purpose both --secret-out /PRIVATE/new-speech-keys/new-key.json --management-profile PROFILE
-python scripts/speech_setup.py create-key --service-account-id SA_ID --purpose both --secret-out /PRIVATE/new-speech-keys/new-key.json --management-profile PROFILE
+python scripts/speech_setup.py prepare-key --service-account-id SA_ID --purpose both --management-profile PROFILE
+python scripts/speech_setup.py create-key --service-account-id SA_ID --purpose both --management-profile PROFILE
 ```
 
-Replace SA_ID/PROFILE with the explicitly authorized target/profile and /PRIVATE with an existing protected location outside the skill checkout. Use the intended runtime secret store; a shared source directory is not a secret destination. `inspect-account` and `prepare-key` only read metadata. Only `create-key` requests a new credential. Purposes are `stt`, `tts`, `both` and separate `s3-static` storage credentials. Use the target owner's required expiry through `--expires-at`; omission is not approval to ignore a governed expiry policy. Static storage keys do not accept that field.
+Replace SA_ID/PROFILE with the authorized account and existing management profile. `inspect-account` and `prepare-key` only read cloud metadata. Only `create-key` requests a new credential. Purposes are `stt`, `tts`, `both` and separate `s3-static` storage credentials. Use the target owner's required expiry through `--expires-at`; static storage keys do not accept that field.
 
-The secret destination must be absent in an existing owned 0700 directory without symlink redirection. Creation reserves a new 0600 file before requesting the key and writes the one-time response there. Terminal output contains only allowlisted metadata. Existing keys and files are preserved. A timeout or failed secret save requires inspection of the account inventory and destination before another attempt; the helper never retries creation, grants roles, rotates or revokes keys automatically.
+Without `--secret-out`, prepare/create generate a filename under the invoking user's `~/secrets`: `yandex-speech-<account>-<purpose>-<unique-id>.json`. The resolved filename is returned as `secret_file`. Creation makes missing destination directories. A prepare operation does not create directories/files; to create at its proposed path, pass that returned path explicitly to `create-key --secret-out PATH`. You can also select any other new response file with `--secret-out PATH`. Existing files are never overwritten, including if another writer creates the file during setup. Ordinary filesystem permissions apply: directory ownership, fixed 0700/0600 modes and readable ancestors are not requirements; traversable symlinked parent paths work.
 
-The agent imports the protected new credential through the intended runtime's supported secret writer and verifies actual method execution before retiring any old credential. Scope and requested expiry must match the creation response. An unexpected response is retained in the protected file and reported as a failure.
+Creation saves the complete one-time response JSON before interpreting optional metadata. Terminal output contains only metadata and the filename. A timeout or failed save requires inspection of account inventory and destination before another attempt; the helper never retries creation, grants roles, rotates or revokes keys automatically. Scope and requested expiry must match the creation response. An unexpected response is retained in the saved file and reported as a failure.
+
+## Apply the saved key to the agent's env
+
+**After successful creation and saving, the agent must call this separate helper with the returned `secret_file` and its own `.env` file:**
+
+```sh
+python scripts/speech_setup.py apply-key --secret-file /returned/path/key.json --env-file "$HERMES_HOME/.env"
+```
+
+For a host other than Hermes, pass its intended env file explicitly. This command reads the saved response without contacting Yandex or requiring management authentication. It leaves that JSON unchanged. It adds or updates only the credential's variables, removes stale duplicate assignments, preserves unrelated settings/comments and existing env ownership/mode, and prints the env filename and updated variable names without values. Creation and env application remain separate commands; `create-key` does not edit env.
+
+Assignments are placed beneath this exact comment (the requested section name is retained):
+
+```dotenv
+# Yandex Search API keys ([https://github.com/bizyumov/yandex-speech/](https://github.com/bizyumov/yandex-speech/))
+```
+
+| Variable | Source and behavior |
+|---|---|
+| `YANDEX_SPEECH_API_KEY` | `secret` in the saved `apiKey` response; used for SpeechKit STT/TTS. |
+| `YANDEX_SPEECH_AWS_ACCESS_KEY_ID` | `accessKey.keyId` in a saved static-storage-key response. |
+| `YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY` | `secret` in that static-storage-key response. |
+| `YANDEX_CLOUD_FOLDER_ID` | Existing shared setting, possibly used by Yandex Search: preserve it unchanged and in place. The key response does not supply a replacement. Service-account SpeechKit calls do not send it. |
+| `YANDEX_SPEECH_S3_BUCKET` | Selected bucket override. Without it, setup uses the skill default template `yandex-speech-<service-account-id>`. Check/setup this exact bucket. |
+| Endpoint | Skill default `https://storage.yandexcloud.net`; configurable through non-secret skill config/CLI. `YANDEX_SPEECH_S3_ENDPOINT` is no longer read or written. |
+| `YANDEX_SPEECH_S3_PREFIX` | Selected prefix override. Without it, use the skill default `speechkit`. Check/setup this exact prefix. |
+
+Applying an API key preserves the two storage-key variables; applying a storage key preserves the SpeechKit API key. Existing bucket/prefix assignments have higher priority than skill defaults (and saved skill configuration), while an explicit recognition call can still select its requested target. Existing `YANDEX_CLOUD_FOLDER_ID` and unrelated env lines are left in place.
+
+## Set up Object Storage with the static key
+
+After saving the static-key response, run:
+
+```sh
+python scripts/speech_setup.py setup-storage --secret-file /returned/path/static-key.json --env-file "$HERMES_HOME/.env"
+```
+
+For already configured bucket and credentials, the saved-key option can be omitted: the command uses the static pair from that same env file. A generated default bucket name needs the service-account ID from the saved static response. The command requires the optional boto3 storage dependency, reusing the skill's S3 client. It performs no cloud-folder or all-bucket listing and does not edit env.
+
+Selection is explicit: the selected env's `YANDEX_SPEECH_S3_BUCKET` and `YANDEX_SPEECH_S3_PREFIX` override the built-in bucket template and prefix. Endpoint is resolved from the skill, not env. The helper checks exactly that bucket; on a confirmed not-found response it creates that same name through S3 `CreateBucket`. Denial is reported as denial, never treated as absence or permission to choose another bucket. Static credentials target the service account's own folder without reusing the possibly unrelated search folder ID.
+
+S3 prefixes are object-key namespaces. The helper lists only the selected prefix; if it is absent, it creates a zero-byte `prefix/` marker at that exact location without overwriting an existing object. It verifies list/write/read/delete access with a unique synthetic probe beneath that prefix, preserving existing objects and deleting only its own probe version. The marker remains to materialize the prefix. Errors never grant roles or redirect to another target.
+
+On success, it returns `bucket`, `prefix`, `endpoint`, whether the bucket was created, and the access-probe result. Carry those returned bucket/prefix values to the **separate** env helper:
+
+```sh
+python scripts/speech_setup.py apply-key --secret-file /returned/path/static-key.json --env-file "$HERMES_HOME/.env" --s3-bucket RETURNED_BUCKET --s3-prefix RETURNED_PREFIX
+```
+
+`apply-key` records missing bucket/prefix assignments under the same requested section, preserving any already configured env choices. It never writes an endpoint variable. Creation of keys, S3 setup and env application are separate, observable steps; do not invent missing storage coordinates or infer that an API-key creation permission grants storage access.
+
+**Gateway environment variables load at startup. Writing `.env` does not update the running gateway.** Until its next start, the agent must explicitly supply the new variables for immediate speech generation. Read the saved response locally, take `secret` as `YANDEX_SPEECH_API_KEY`, and pass it in the generation subprocess's environment (using `sys.executable` for a Python child), without putting the value in argv, chat or command output. For storage, use the two static-key mappings above. An env change in a terminal child does not update the parent gateway or its built-in speech tool. Do not claim the running gateway adopted a new key merely because `apply-key` succeeded.
 
 ## Required authority
 

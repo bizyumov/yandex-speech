@@ -17,13 +17,17 @@ Use this skill for uploaded recordings, Yandex-specific synthesis, voice selecti
 
 Use plain `python` from the configured standard Hermes environment; no hardcoded/private interpreter. Run the [local readiness check](references/yandex-cloud-setup.md) for provider-specific setup or diagnosis. A present key does not prove permission; report a denied/unverifiable operation without guessing which grant is absent.
 
-The account helper can inspect metadata, prepare a plan and create a scoped API/static key only when explicitly authorized. New secrets go to an exclusive protected file, never chat/argv/configuration JSON. No roles, buckets, runtime settings or old keys are changed automatically.
+The account helper can inspect metadata, prepare a plan and create authorized API/static keys. It returns a generated response filename under `~/secrets` by default; `--secret-out PATH` selects another new file. Existing response files are never overwritten. After successful creation/save, call the separate `apply-key --secret-file RETURNED_PATH --env-file "$HERMES_HOME/.env"` for your own profile. Follow the [exact variable mappings and env section](references/yandex-cloud-setup.md#apply-the-saved-key-to-the-agents-env); preserve existing `YANDEX_CLOUD_FOLDER_ID` shared with Yandex Search.
+
+For S3, call `setup-storage` with the saved static response and your own env, then carry its returned bucket/prefix into `apply-key`. The skill defaults to bucket template `yandex-speech-<service-account-id>` and prefix `speechkit`. Env bucket/prefix override saved/default settings; check/setup exactly those coordinates. Explicit storage setup creates the selected resources only on confirmed absence, without changing IAM grants. Endpoint stays in skill configuration, not env. Key creation does not change buckets or retire old keys.
+
+Gateway variables load at startup: until its next start, explicitly supply the new variables in immediate speech-generation subprocesses. Saving env does not refresh the running gateway.
 
 Recorded recognition prefers API v3 over gRPC, then compatible REST inline/private storage. Explicit version, timing, speaker and literary requirements are preserved. Text-only v1 fallback requires compatible explicit choices; a short-input fast path never silently changes the requested output. Use [recording options](references/transcription.md) for formats, limits, explicit partitioning and recovery.
 
 ## Preserve preferences
 
-Read `$HOME/.config/yandex-speech/config.json`, relative to the active workspace in Hermes. Only explicit `--config PATH` selects another file. Precedence is explicit call → user file → adapter defaults → built-ins. Keep existing voice/language/storage aliases at their documented default level; do not switch process-global HOME between profiles.
+Read `$HOME/.config/yandex-speech/config.json`, relative to the active workspace in Hermes. Only explicit `--config PATH` selects another file. Precedence is explicit call → user file → adapter defaults → built-ins. For storage bucket/prefix specifically, env overrides the saved user file and adapter defaults; explicit call options remain highest. Existing voice/language aliases keep their documented default level. Do not switch process-global HOME between profiles.
 
 `YANDEX_SPEECH_API_KEY` or the owning host secret resolver supplies SpeechKit authentication. Upload credentials are separate. Service-account SpeechKit calls do not send a folder ID. Recorded Russian recognition defaults to API v3, literary text enabled, profanity masking off and phone formatting off.
 

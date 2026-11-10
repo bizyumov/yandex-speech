@@ -30,7 +30,7 @@ The plugin-specific voice/style leaves use the native CLI's `--force` option bec
 
 ## Preferences and voice delivery
 
-The user file `.config/yandex-speech/config.json` is relative to the active workspace. It overrides profile defaults and host voice/model/language hints. Credentials resolve in that same owning scope; another profile's ambient settings are excluded. Keep literal roles: Ermil supports `good`, while `friendly` belongs to compatible other voices.
+The user file `.config/yandex-speech/config.json` is relative to the active workspace. It overrides profile defaults and host voice/model/language hints. Storage bucket/prefix are an exception: the owning env values override saved/default storage settings, while an explicit call remains highest. Storage endpoint belongs in skill configuration, not env. Credentials resolve in that same owning scope; another profile's ambient settings are excluded. Keep literal roles: Ermil supports `good`, while `friendly` belongs to compatible other voices.
 
 Use the standard host speech tool for ordinary voice replies. Audio generation, an addressed attachment/voice message and playback in a connected channel are different results. Verify the requested result; a generated file alone does not prove delivery or playback. For explicit XML pronunciation, the same plugin adds the scoped `yandex_speech_ssml` operation; the built-in speech tool itself does not preserve XML.
 

@@ -187,7 +187,7 @@ class ObjectStorageUploader:
                  _environment=None, _client=None):
         supplied = os.environ if _environment is None else _environment
         names = {"HOME", "HERMES_HOME", "XDG_STATE_HOME", "YANDEX_SPEECH_S3_BUCKET",
-                 "YANDEX_SPEECH_S3_ENDPOINT", "YANDEX_SPEECH_S3_PREFIX",
+                 "YANDEX_SPEECH_S3_PREFIX",
                  "YANDEX_SPEECH_AWS_ACCESS_KEY_ID", "YANDEX_SPEECH_AWS_SECRET_ACCESS_KEY"}
         self.environment = {name: supplied[name] for name in names if name in supplied}
         self.context = _context or RuntimeContext(

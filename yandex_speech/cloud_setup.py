@@ -1,4 +1,4 @@
-"""Explicit account/key setup. Never edits runtime configuration or grants roles."""
+"""Explicit account/key setup and separate env application; never grants roles."""
 from __future__ import annotations
 
 import argparse
@@ -9,12 +9,13 @@ import os
 from pathlib import Path
 import re
 import shutil
-import stat
+import uuid
 import subprocess
 
 import requests
 
 from .errors import SpeechError
+from .key_env import apply_key
 
 IAM = "https://iam.api.cloud.yandex.net"
 FOLDERS = "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders/"
@@ -25,7 +26,7 @@ SCOPES = {"stt": ["yc.ai.speechkitStt.execute"],
 ROLES = {"stt": ["ai.speechkit-stt.user"], "tts": ["ai.speechkit-tts.user"],
          "both": ["ai.speechkit-stt.user", "ai.speechkit-tts.user"],
          "s3-static": ["storage.uploader"]}
-COMMANDS = ("inspect-account", "prepare-key", "create-key")
+COMMANDS = ("inspect-account", "prepare-key", "create-key", "apply-key", "setup-storage")
 
 
 def _timestamp(value):
@@ -183,31 +184,21 @@ def inspect_account(client, account_id, purpose="both"):
     return result
 
 
+def _secret_path(destination, account_id, purpose):
+    if destination is None:
+        destination = Path.home() / "secrets" / f"yandex-speech-{account_id}-{purpose}-{uuid.uuid4().hex}.json"
+    return Path(destination).expanduser().absolute()
+
+
 @contextmanager
-def _private_destination(destination):
+def _secret_destination(destination):
     path = Path(destination).expanduser().absolute()
-    if ".." in path.parts or path.name in {"", ".", ".."}:
-        raise SpeechError("CONFIG", "secret output must be an unambiguous new file")
-    directory_fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    if os.path.lexists(path):
+        raise SpeechError("CONFIG", "secret destination already exists; it will not be replaced")
     try:
-        for part in path.parent.parts[1:]:
-            following = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
-            os.close(directory_fd)
-            directory_fd = following
-        info = os.fstat(directory_fd)
-        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-            raise SpeechError("CONFIG", "secret output needs an existing owned directory with mode 0700")
-        try:
-            os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise SpeechError("CONFIG", "secret destination already exists; it will not be replaced")
-        yield path, directory_fd
+        yield path
     except OSError:
-        raise SpeechError("CONFIG", "secret output needs an existing private directory without symlink redirection") from None
-    finally:
-        os.close(directory_fd)
+        raise SpeechError("STATE", "secret destination access failed; inspect the destination and key inventory before retrying") from None
 
 
 def _plan(client, account_id, purpose, expires_at):
@@ -229,41 +220,36 @@ def _plan(client, account_id, purpose, expires_at):
             "inspection": report, "next_action": "Only explicit create-key creates a credential; no roles or runtime settings are changed."}
 
 
-def prepare_key(client, account_id, purpose, secret_out, *, expires_at=None):
+def prepare_key(client, account_id, purpose, secret_out=None, *, expires_at=None):
     _validate(account_id, purpose, expires_at)
-    with _private_destination(secret_out) as (path, _):
+    with _secret_destination(_secret_path(secret_out, account_id, purpose)) as path:
         return {**_plan(client, account_id, purpose, expires_at), "secret_file": str(path)}
 
 
-def _claim_matches(parent, name, fd):
-    current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+def _claim_matches(path, fd):
+    current = os.stat(path, follow_symlinks=False)
     owned = os.fstat(fd)
-    directory = os.fstat(parent)
-    return (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino) and (
-        stat.S_ISREG(current.st_mode) and stat.S_IMODE(current.st_mode) == 0o600 and
-        directory.st_uid == os.getuid() and stat.S_IMODE(directory.st_mode) == 0o700)
+    return (current.st_dev, current.st_ino) == (owned.st_dev, owned.st_ino)
 
 
-def create_key(client, account_id, purpose, secret_out, *, expires_at=None):
+def create_key(client, account_id, purpose, secret_out=None, *, expires_at=None):
     _validate(account_id, purpose, expires_at)
-    with _private_destination(secret_out) as (path, parent):
+    with _secret_destination(_secret_path(secret_out, account_id, purpose)) as path:
         plan = _plan(client, account_id, purpose, expires_at)
         try:
-            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
         except OSError:
-            raise SpeechError("STATE", "secret destination changed before creation; no key was requested") from None
+            raise SpeechError("STATE", "could not create a new secret destination; no key was requested") from None
         try:
-            os.fchmod(fd, 0o600)
             os.fsync(fd)
-            os.fsync(parent)
-            if not _claim_matches(parent, path.name, fd):
+            if not _claim_matches(path, fd):
                 raise SpeechError("STATE", "secret destination changed; no key was requested")
             try:
                 response = client.request("POST", _endpoint(purpose), json=plan["request"])
             except SpeechError as error:
-                if error.category in {"AUTH", "PERMISSION", "CONFIG", "LIMIT"} and _claim_matches(parent, path.name, fd):
-                    os.unlink(path.name, dir_fd=parent)
-                    os.fsync(parent)
+                if error.category in {"AUTH", "PERMISSION", "CONFIG", "LIMIT"} and _claim_matches(path, fd):
+                    os.unlink(path)
                 raise
             # Capture the one-time response before interpreting optional metadata.
             try:
@@ -275,33 +261,32 @@ def create_key(client, account_id, purpose, secret_out, *, expires_at=None):
                         raise OSError()
                     view = view[count:]
                 os.fsync(fd)
-                os.fsync(parent)
-                if not _claim_matches(parent, path.name, fd):
+                if not _claim_matches(path, fd):
                     raise OSError()
             except OSError:
-                raise SpeechError("STATE", "key creation succeeded but protected secret publication failed; inspect inventory and destination, do not retry or revoke automatically") from None
+                raise SpeechError("STATE", "key creation succeeded but secret save failed; inspect inventory and destination, do not retry or revoke automatically") from None
             field = "accessKey" if purpose == "s3-static" else "apiKey"
             metadata = response.get(field)
             if (not isinstance(metadata, dict) or metadata.get("serviceAccountId") != account_id
                     or not isinstance(metadata.get("id"), str) or not metadata["id"]
                     or not isinstance(response.get("secret"), str) or not response["secret"].strip()):
-                raise SpeechError("STATE", "unexpected creation response retained in the protected file; inspect it before retrying")
+                raise SpeechError("STATE", "unexpected creation response retained in the saved file; inspect it before retrying")
             actual = _metadata(metadata)
             if purpose != "s3-static":
                 if set(actual["scopes"]) != set(SCOPES[purpose]):
-                    raise SpeechError("STATE", "created key scopes do not match the request; protected response retained, do not retry automatically")
+                    raise SpeechError("STATE", "created key scopes do not match the request; response retained, do not retry automatically")
                 if expires_at is not None:
                     try:
                         confirmed = _timestamp(actual.get("expiresAt"))
                     except SpeechError:
                         confirmed = None
                     if confirmed != _timestamp(expires_at):
-                        raise SpeechError("STATE", "created key expiry was not confirmed; protected response retained, do not retry automatically")
+                        raise SpeechError("STATE", "created key expiry was not confirmed; response retained, do not retry automatically")
             elif not isinstance(metadata.get("keyId"), str) or not metadata["keyId"]:
-                raise SpeechError("STATE", "created storage key ID is missing; protected response retained")
+                raise SpeechError("STATE", "created storage key ID is missing; response retained")
             return {"status": "created", "purpose": purpose, "key": actual,
                     "secret_file": str(path), "execution_probe": "not_run",
-                    "next_action": "Load the protected credential into the intended runtime through its supported secret writer; verify actual execution before retiring any old key."}
+                    "next_action": "Call apply-key with this secret_file and your own .env file. Gateway variables load at startup; explicitly supply the new variables to immediate speech-generation child processes."}
         finally:
             os.close(fd)
 
@@ -309,29 +294,52 @@ def create_key(client, account_id, purpose, secret_out, *, expires_at=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=COMMANDS)
-    parser.add_argument("--service-account-id", required=True)
+    parser.add_argument("--service-account-id")
     parser.add_argument("--purpose", choices=tuple(SCOPES), default="both")
-    auth = parser.add_mutually_exclusive_group(required=True)
+    auth = parser.add_mutually_exclusive_group()
     auth.add_argument("--management-profile", help="Existing authorized yc profile")
     auth.add_argument("--management-token-env", help="Name of the environment variable containing a management IAM token")
-    parser.add_argument("--secret-out", type=Path)
+    parser.add_argument("--secret-out", type=Path, help="New response file; default: generated filename in ~/secrets")
+    parser.add_argument("--secret-file", type=Path, help="Saved response JSON for apply-key or setup-storage")
+    parser.add_argument("--env-file", type=Path, help="Agent's own env file")
+    parser.add_argument("--s3-bucket", help="Bucket returned by setup-storage; existing env value takes priority")
+    parser.add_argument("--s3-prefix", help="Prefix returned by setup-storage; existing env value takes priority")
     parser.add_argument("--expires-at", help="Explicit API-key expiry in RFC3339")
     args = parser.parse_args(argv)
-    if args.operation != "inspect-account" and args.secret_out is None:
-        parser.error("prepare-key/create-key require --secret-out in an existing private directory")
-    if args.operation == "inspect-account" and (args.secret_out is not None or args.expires_at is not None):
-        parser.error("inspection does not take secret-output or expiry options")
+    if args.operation in {"apply-key", "setup-storage"}:
+        if args.env_file is None or (args.operation == "apply-key" and args.secret_file is None):
+            parser.error("apply-key requires --secret-file and --env-file; setup-storage requires --env-file")
+        if any((args.service_account_id, args.management_profile, args.management_token_env,
+                args.secret_out, args.expires_at)):
+            parser.error("apply-key/setup-storage use saved credentials; do not supply management or creation options")
+        if args.operation != "apply-key" and (args.s3_bucket is not None or args.s3_prefix is not None):
+            parser.error("--s3-bucket and --s3-prefix belong to apply-key; setup-storage selects from env and skill defaults")
+    else:
+        if any((args.secret_file, args.env_file, args.s3_bucket, args.s3_prefix)):
+            parser.error("env application and storage setup options do not belong to account operations")
+        if not args.service_account_id or not (args.management_profile or args.management_token_env):
+            parser.error("account operations require --service-account-id and management-profile or management-token-env")
+        if args.operation == "inspect-account" and (args.secret_out is not None or args.expires_at is not None):
+            parser.error("inspection does not take secret-output or expiry options")
     try:
-        _validate(args.service_account_id, args.purpose, args.expires_at)
-        if args.operation != "inspect-account":
-            with _private_destination(args.secret_out):
-                pass
-        client = ManagementClient.from_args(args)
-        if args.operation == "inspect-account":
-            report = inspect_account(client, args.service_account_id, args.purpose)
+        if args.operation == "apply-key":
+            report = apply_key(args.secret_file, args.env_file,
+                               s3_bucket=args.s3_bucket, s3_prefix=args.s3_prefix)
+        elif args.operation == "setup-storage":
+            from .storage_setup import setup_storage
+            report = setup_storage(args.env_file, args.secret_file)
         else:
-            operation = create_key if args.operation == "create-key" else prepare_key
-            report = operation(client, args.service_account_id, args.purpose, args.secret_out, expires_at=args.expires_at)
+            _validate(args.service_account_id, args.purpose, args.expires_at)
+            if args.operation != "inspect-account":
+                args.secret_out = _secret_path(args.secret_out, args.service_account_id, args.purpose)
+                with _secret_destination(args.secret_out):
+                    pass
+            client = ManagementClient.from_args(args)
+            if args.operation == "inspect-account":
+                report = inspect_account(client, args.service_account_id, args.purpose)
+            else:
+                operation = create_key if args.operation == "create-key" else prepare_key
+                report = operation(client, args.service_account_id, args.purpose, args.secret_out, expires_at=args.expires_at)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except SpeechError as error:
