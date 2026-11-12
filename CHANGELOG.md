@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Fix #81: automatic recording recognition admits inline audio before using configured S3; reserve optional uploads for explicit inline-size failures, preserve explicit storage/recovery, and document provider limits separately from client wire guards.
+
 - Add S3 bucket/prefix setup with skill defaults, higher-priority env coordinates, scoped access probes and bucket creation via static credentials; keep endpoint in skill configuration instead of env.
 
 - Default account-key responses to generated files in `~/secrets`, retain no-overwrite behavior and ordinary filesystem permissions, and add separate offline `apply-key` env application with exact credential mappings, shared folder-ID preservation and gateway startup guidance.
