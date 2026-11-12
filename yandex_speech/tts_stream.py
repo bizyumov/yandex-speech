@@ -23,13 +23,19 @@ class GrpcStreamingTransport:
         self.metadata=(("authorization","Api-Key "+api_key),)
         self.call=None
     def open_stream(self,requests,timeout):
+        deadline=time.monotonic()+timeout
         self.ready=self.grpc.channel_ready_future(self.channel)
         if self.closed.is_set():self.ready.cancel()
         try:self.ready.result(timeout=min(10,timeout))
         except self.grpc.FutureTimeoutError:
+            if time.monotonic()>=deadline:
+                raise SpeechError("TIMEOUT","stream connection exhausted the operation deadline") from None
             raise SpeechError("TRANSPORT","gRPC streaming connection unavailable before submission",code="GRPC_UNREACHABLE") from None
         finally:self.ready=None
-        self.call=self.stub.StreamSynthesis(requests,metadata=self.metadata,timeout=timeout)
+        remaining=deadline-time.monotonic()
+        if remaining<=0:
+            raise SpeechError("TIMEOUT","stream deadline expired before submission")
+        self.call=self.stub.StreamSynthesis(requests,metadata=self.metadata,timeout=remaining)
         if self.closed.is_set():self.call.cancel()
         return self.call
     def close(self):

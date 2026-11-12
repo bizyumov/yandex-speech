@@ -27,6 +27,7 @@ DEFAULT_VOICE = "alena"
 DEFAULT_FORMAT = "mp3"
 MAX_CHARS = 5000
 MAX_RETRIES = 3
+MAX_SYNTHESIS_BYTES = 256 * 1024 * 1024
 
 
 class TtsError(SpeechError):
@@ -48,7 +49,7 @@ class TextToSpeech:
             raise TtsError("YANDEX_SPEECH_API_KEY is required",category="AUTH")
 
     def _options(self, *, lang=None, voice=None, fmt=None, format=None, speed=None,
-                 emotion=None, api_version=None, transport=None, model=None, role=None,
+                 emotion=None, api_version=None, transport=None, file_method=None, model=None, role=None,
                  text_format=None, unsafe_mode=None, sample_rate=None, volume=None,
                  pitch_shift=None, duration_ms=None, duration_policy=None, **unknown):
         if unknown:
@@ -60,7 +61,7 @@ class TextToSpeech:
             ("default_format",format if format is not None else fmt),
             ("default_speed",speed),("default_emotion",emotion),
             ("api_version",str(api_version) if api_version is not None else None),
-            ("transport",transport),("model",model),("role",role),("text_format",text_format),
+            ("transport",transport),("file_method",file_method),("model",model),("role",role),("text_format",text_format),
             ("unsafe_mode",unsafe_mode),("sample_rate_hertz",sample_rate),("volume",volume),
             ("pitch_shift",pitch_shift),("duration_ms",duration_ms),("duration_policy",duration_policy)] if value is not None}
         settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
@@ -74,6 +75,19 @@ class TextToSpeech:
 
     def synthesize_bytes(self, text: str, *, deadline_seconds=120, **kwargs) -> bytes:
         settings,options,version=self._options(**kwargs)
+        if options["file_method"] == "stream":
+            from yandex_speech.tts_selection import plan_synthesis
+            from yandex_speech.tts_stream_file import collect_stream_file, stream_contract
+            plan = plan_synthesis(text, options, stream_contract=stream_contract(options),
+                                  sources=settings.sources, config_path=settings.path)
+            if len(plan.parts) != 1:
+                raise SpeechError("LIMIT", "synthesize_bytes accepts one admitted request; use synthesize for complete multipart files")
+            result = collect_stream_file(text, plan.request.as_options(), api_key=self.api_key,
+                sources=dict(plan.request.sources), deadline_seconds=deadline_seconds)
+            self.last_synthesis = dict(api_version="3", transport="grpc", method="stream",
+                model=options["_model"], voice=options["default_voice"], role=options["_role"],
+                format=options["default_format"], parts=1, status="complete")
+            return result.data
         return self._synthesize_request(text,settings,options,version,deadline_seconds=deadline_seconds)
 
     def _synthesize_request(self, text, settings, options, version, *, deadline_seconds=120):
@@ -107,32 +121,24 @@ class TextToSpeech:
             if not v1_fits(text,options):
                 raise SpeechError("LIMIT", "API v1 request exceeds 5000 code points or 15000 encoded body bytes")
             payload = v1_form(text,options)
-            for attempt in range(3):
-                remaining = deadline-time.monotonic()
-                if remaining <= 0:
-                    raise SpeechError("TIMEOUT", "synthesis deadline expired")
-                try:
-                    response=requests.post(API_URL,
-                        headers={"Authorization":f"Api-Key {self.api_key}"},
-                        data=payload,timeout=min(120,remaining))
-                except requests.RequestException:
-                    raise TtsError("TTS request acceptance is unknown; no automatic resubmission",
-                                   category="SUBMISSION_UNCERTAIN") from None
-                if response.status_code < 400 and "application/json" not in response.headers.get("Content-Type",""):
-                    data=response.content
-                    if not data:
-                        raise TtsError("provider returned no synthesized audio",category="PROVIDER")
-                    break
-                if response.status_code in {429,500,502,503,504} and attempt < 2:
-                    delay=min(1.5*(attempt+1),max(0,deadline-time.monotonic()))
-                    time.sleep(delay)
-                    continue
-                category={401:"AUTH",403:"PERMISSION",429:"RATE_LIMIT"}.get(response.status_code,"PROVIDER")
-                remedy="; verify ai.speechkit-tts.user and API key scope yc.ai.speechkitTts.execute" if response.status_code==403 else ""
-                raise TtsError(f"TTS failed: HTTP {response.status_code}{remedy}",category=category,
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise SpeechError("TIMEOUT", "synthesis deadline expired")
+            try:
+                response = requests.post(API_URL,
+                    headers={"Authorization": f"Api-Key {self.api_key}"},
+                    data=payload, timeout=min(120, remaining))
+            except requests.RequestException:
+                raise TtsError("TTS request acceptance is unknown; no automatic resubmission",
+                               category="SUBMISSION_UNCERTAIN") from None
+            if response.status_code >= 400 or "application/json" in response.headers.get("Content-Type", ""):
+                category = {401:"AUTH", 403:"PERMISSION", 429:"RATE_LIMIT"}.get(response.status_code, "PROVIDER")
+                remedy = "; verify ai.speechkit-tts.user and API key scope yc.ai.speechkitTts.execute" if response.status_code == 403 else ""
+                raise TtsError(f"TTS failed: HTTP {response.status_code}{remedy}", category=category,
                                code=str(response.status_code))
-            else:
-                raise TtsError("TTS retry budget exhausted",category="PROVIDER")
+            data = response.content
+            if not data:
+                raise TtsError("provider returned no synthesized audio", category="PROVIDER")
             if options["default_format"]=="lpcm" and len(data)%2:
                 raise SpeechError("OUTPUT_PARTIAL","provider PCM ends inside a sample")
             if options["default_format"] == "wav":
@@ -144,7 +150,143 @@ class TextToSpeech:
             "format":options["default_format"],"conversion":None}
         return data
 
-    def synthesize(self,text,output_path,*,overwrite=False,deadline_seconds=1800,**kwargs) -> list[Path]:
+
+    def synthesize(self, text, output_path, *, overwrite=False, deadline_seconds=1800, **kwargs):
+        settings, options, _ = self._options(**kwargs)
+        # Automatic call-site activation follows the explicit-route native comparison.
+        if options["file_method"] == "auto":
+            return self._synthesize_legacy(text, output_path, overwrite=overwrite,
+                deadline_seconds=deadline_seconds, **kwargs)
+        return self._synthesize_planned(text, output_path, settings, options,
+            overwrite=overwrite, deadline_seconds=deadline_seconds)
+
+    def _synthesize_planned(self, text, output_path, settings, options, *,
+                            overwrite=False, deadline_seconds=1800):
+        import json
+        import math
+        import uuid
+        from collections import deque
+        from dataclasses import asdict
+        from yandex_speech.tts_audio import join_audio, finalize_audio
+        from yandex_speech.tts_capabilities import probe_joiner
+        from yandex_speech.tts_selection import plan_synthesis
+        from yandex_speech.tts_stream_file import collect_stream_file, stream_contract
+        from yandex_speech.tts_text import bisect_text, bisect_ssml, v1_fits
+        if type(overwrite) is not bool:
+            raise SpeechError("CONFIG", "overwrite must be explicitly boolean")
+        if type(deadline_seconds) not in (int, float) or not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise SpeechError("CONFIG", "synthesis deadline must be finite and positive")
+        output = Path(output_path)
+        if output.is_symlink() or output.exists() and (not overwrite or not output.is_file()):
+            raise SpeechError("CONFIG", "select an absent output or explicitly overwrite an owned regular file")
+        import tempfile
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryFile(dir=output.parent) as storage:
+                storage.write(b"\0")
+                storage.flush()
+                os.fsync(storage.fileno())
+        except OSError:
+            raise SpeechError("CONFIG", "output parent cannot supply writable owned staging") from None
+        deadline = time.monotonic() + deadline_seconds
+        scope = (self.context.workspace or self.context.user_home) if self.context is not None else (
+            self.environment.get("HERMES_HOME") or self.environment.get("HOME"))
+        def prepare(excluded=()):
+            return plan_synthesis(text, options, stream_contract=stream_contract(options),
+                sources=settings.sources, config_path=settings.path, profile_scope=scope, excluded=excluded)
+        plan = prepare()
+        fmt = plan.format
+        original = plan.request.as_options()
+        execution = dict(original, api_version=plan.api_version, transport=plan.transport)
+        pending, completed, receipts = deque(plan.parts), [], []
+        splits, completed_bytes, over_budget = 0, 0, None
+        partial = output.parent / (".yandex-speech-partial-" + uuid.uuid4().hex)
+        self.last_synthesis = {}
+        try:
+            while pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SpeechError("TIMEOUT", "whole synthesis operation deadline expired")
+                piece = pending.popleft()
+                try:
+                    if plan.method == "stream":
+                        result = collect_stream_file(piece, execution, api_key=self.api_key,
+                            sources=dict(plan.request.sources), deadline_seconds=remaining,
+                            partial_directory=partial)
+                        data = result.data
+                        receipts.append(dict(response_records=result.response_records, audio_records=result.audio_records,
+                            first_audio_seconds=result.first_audio_seconds, final_seconds=result.final_seconds))
+                    else:
+                        data = self._synthesize_request(piece, settings, execution, plan.api_version,
+                            deadline_seconds=remaining)
+                except SpeechError as error:
+                    if (not completed and error.code == "GRPC_UNREACHABLE"
+                            and original["transport"] == "auto"):
+                        plan = prepare(excluded=("grpc-v3-stream", "grpc-v3-utterance"))
+                        execution = dict(plan.request.as_options(),
+                            api_version=plan.api_version, transport=plan.transport)
+                        pending = deque(plan.parts)
+                        continue
+                    if (plan.method == "utterance" and plan.api_version == "3"
+                            and not execution.get("unsafe_mode") and error.category == "LIMIT"
+                            and error.code == "UTTERANCE_LIMIT" and splits < 32):
+                        capability = probe_joiner(fmt)
+                        if not capability.ready:
+                            raise SpeechError("PREREQUISITE", "duration rejection requires assembly: " + capability.reason) from None
+                        fits = lambda value: v1_fits(value, execution) if plan.api_version == "1" else len(value) <= 250
+                        smaller = (bisect_ssml(piece, fits) if execution["text_format"] == "ssml"
+                                   else bisect_text(piece))
+                        pending.extendleft(reversed(smaller))
+                        splits += 1
+                        continue
+                    raise
+                data = finalize_audio(data, fmt)
+                if completed_bytes + len(data) > MAX_SYNTHESIS_BYTES:
+                    over_budget = data
+                    raise SpeechError("LIMIT", "complete synthesis exceeded its 256 MiB output budget; accepted parts retained")
+                completed_bytes += len(data)
+                completed.append(data)
+            if time.monotonic() >= deadline:
+                raise SpeechError("TIMEOUT", "whole synthesis operation deadline expired")
+            data = join_audio(completed, fmt, execution["sample_rate_hertz"],
+                              timeout=deadline-time.monotonic())
+            if len(data) > MAX_SYNTHESIS_BYTES:
+                raise SpeechError("LIMIT", "assembled synthesis exceeds its 256 MiB output budget; accepted parts retained")
+            if time.monotonic() >= deadline:
+                raise SpeechError("TIMEOUT", "synthesis deadline expired before publication")
+            atomic_write(output, finalize_audio(data, fmt), overwrite=overwrite)
+            self.last_synthesis = dict(api_version=plan.api_version, transport=plan.transport,
+                method=plan.method, model=execution["_model"], voice=execution["default_voice"],
+                role=execution["_role"] or execution["_voice_info"]["default_role"],
+                language=execution["default_lang"], format=fmt, conversion=None, status="complete",
+                parts=len(completed), planned_parts=len(plan.parts), input_characters=len(text),
+                output=str(output), assembly="single" if len(completed) == 1 else "complete-container",
+                route_reason=plan.reason, exclusions=[asdict(item) for item in plan.exclusions],
+                stream_receipts=receipts, duration_splits=splits, output_budget_bytes=MAX_SYNTHESIS_BYTES)
+            return [output]
+        except BaseException as error:
+            self.last_synthesis.update(status="incomplete", parts=len(completed), output=None,
+                method=plan.method, api_version=plan.api_version, transport=plan.transport)
+            directory = getattr(error, "partial_dir", None)
+            if completed or over_budget is not None or directory is not None:
+                directory = Path(directory or partial)
+                try:
+                    directory.mkdir(parents=True, exist_ok=True)
+                    error.partial_dir = directory
+                    local_format = "ogg" if fmt == "oggopus" else fmt
+                    for index, data in enumerate(completed):
+                        atomic_write(directory / f"part-{index:06d}.{local_format}", data)
+                    if over_budget is not None:
+                        atomic_write(directory / f"part-{len(completed):06d}.{local_format}", over_budget)
+                    atomic_write(directory / "manifest.json", json.dumps({
+                        "status": "incomplete", "parts": len(completed) + (over_budget is not None),
+                        "api_version": plan.api_version, "method": plan.method, "format": fmt,
+                        "reason": getattr(error, "category", "OUTPUT_PARTIAL")}).encode())
+                except Exception as retention_error:
+                    error.partial_retention_error = type(retention_error).__name__
+            raise
+
+    def _synthesize_legacy(self,text,output_path,*,overwrite=False,deadline_seconds=1800,**kwargs) -> list[Path]:
         import json
         import math
         import uuid
@@ -209,6 +351,8 @@ class TextToSpeech:
         from yandex_speech.tts_v3 import grpc_sdk,request_body
         from yandex_speech.tts_stream import AudioStream,GrpcStreamingTransport
         settings,options,version=self._options(**kwargs)
+        if options.get("file_method") == "utterance":
+            raise SpeechError("CONFIG", "utterance file method excludes StreamSynthesis")
         if options["api_version"]=="1" or options["transport"]=="rest":
             raise SpeechError("CONFIG","native synthesis streaming requires API v3 over gRPC")
         if options["text_format"]!="plain":
@@ -320,6 +464,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--emotion")
     parser.add_argument("--api-version", choices=["auto", "1", "3"])
     parser.add_argument("--transport", choices=["auto", "grpc", "rest"])
+    parser.add_argument("--file-method", choices=["auto", "utterance", "stream"],
+                        help="complete-file producer; --stream separately emits progressive PCM")
     parser.add_argument("--model", choices=["auto", "general", "general:rc", "general:deprecated", "livetts"])
     parser.add_argument("--role")
     parser.add_argument("--text-format", choices=["plain","ssml"])
@@ -345,6 +491,8 @@ def main() -> int:
     args=parser.parse_args()
     if (args.text is None)==(args.input_file is None):
         parser.error("provide exactly one of text or --input-file")
+    if args.stream and args.file_method == "utterance":
+        parser.error("--stream conflicts with --file-method utterance")
     temporary=None
     try:
         if args.input_file not in {None,"-"}:
@@ -360,7 +508,7 @@ def main() -> int:
             if value:adapter[key]=value
         client=TextToSpeech(_context=context,_adapter_defaults={"tts":adapter})
         options=dict(lang=args.lang,voice=args.voice,fmt=args.fmt,speed=args.speed,
-            emotion=args.emotion,api_version=args.api_version,transport=args.transport,
+            emotion=args.emotion,api_version=args.api_version,transport=args.transport,file_method=args.file_method,
             model=args.model,role=args.role,text_format=args.text_format,
             unsafe_mode=args.unsafe_mode,sample_rate=args.sample_rate,
             volume=args.volume,pitch_shift=args.pitch_shift,

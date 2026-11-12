@@ -104,3 +104,33 @@ class EncodedAssemblyTests(unittest.TestCase):
         first, tail = pcm[2400:7200], pcm[-7200:-2400]
         self.assertGreater(tone_strength(first, 440), 10 * tone_strength(first, 880))
         self.assertGreater(tone_strength(tail, 880), 10 * tone_strength(tail, 440))
+
+class ProviderFramingTests(unittest.TestCase):
+    def test_ogg_framing_requires_ordered_single_container_and_tail(self):
+        from yandex_speech.tts_audio import finalize_audio
+        data = encoded_tone(440)
+        self.assertEqual(finalize_audio(data, "oggopus"), data)
+        for broken in (data[:-1], data[:27], data + data, b"OggS"):
+            with self.subTest(size=len(broken)), self.assertRaises(SpeechError):
+                finalize_audio(broken, "oggopus")
+
+    def test_header_only_wav_and_ogg_fail_while_silent_samples_work(self):
+        from yandex_speech.tts_audio import finalize_audio, wrap_pcm
+        head = b"OpusHead" + b"\1" + b"\1" + b"\0" * 9
+        ogg = (b"OggS\0\6" + b"\0" * 8 + struct.pack("<II", 1, 0) +
+               b"\0" * 4 + bytes([1, len(head)]) + head)
+        for data, fmt in ((wrap_pcm(b"", 48000), "wav"), (ogg, "oggopus")):
+            with self.subTest(format=fmt), self.assertRaises(SpeechError):
+                finalize_audio(data, fmt)
+        self.assertTrue(finalize_audio(wrap_pcm(b"\0\0" * 480, 48000), "wav"))
+        self.assertEqual(finalize_audio(b"\0\0", "lpcm"), b"\0\0")
+
+    def test_mp3_framing_accepts_generated_file_and_rejects_truncated_tail(self):
+        from yandex_speech.tts_audio import finalize_audio
+        data = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"], input=encoded_tone(440),
+            capture_output=True, check=True, timeout=15).stdout
+        self.assertEqual(finalize_audio(data, "mp3"), data)
+        for broken in (data[:-1], b"ID3", b"not mp3", b""):
+            with self.subTest(size=len(broken)), self.assertRaises(SpeechError):
+                finalize_audio(broken, "mp3")

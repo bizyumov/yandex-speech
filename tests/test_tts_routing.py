@@ -94,3 +94,52 @@ class SynthesisRoutingTests(unittest.TestCase):
                     api_version="1",fmt="lpcm")
         self.assertEqual(cm.exception.category,"OUTPUT_PARTIAL")
         self.assertFalse((Path(self.tmp.name)/"out.pcm").exists())
+
+    def test_explicit_file_method_routes_through_preflight_and_cli_selector(self):
+        from scripts.tts import build_parser
+        args = build_parser().parse_args(["text", "--output", "out.mp3", "--file-method", "utterance"])
+        self.assertEqual(args.file_method, "utterance")
+        with patch("scripts.tts.requests.post", return_value=Response([
+                {"result": {"audioChunk": {"data": "AAA="}}}])) as post:
+            output = Path(self.tmp.name) / "reply.mp3"
+            self.client.synthesize("Тест.", output, file_method="utterance",
+                api_version="3", transport="rest", voice="ermil", role="good", fmt="lpcm")
+        self.assertEqual(self.client.last_synthesis["method"], "utterance")
+        self.assertEqual(self.client.last_synthesis["voice"], "ermil")
+        self.assertEqual(self.client.last_synthesis["role"], "good")
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(output.read_bytes(), b"\0\0")
+
+    def test_known_multipart_missing_joiner_stops_before_billing(self):
+        from yandex_speech.tts_capabilities import Capability
+        with patch("yandex_speech.tts_selection.probe_joiner",
+                   return_value=Capability("absent", "synthetic ffmpeg missing")), patch(
+                "scripts.tts.requests.post") as post:
+            with self.assertRaises(SpeechError) as caught:
+                self.client.synthesize("я" * 251, Path(self.tmp.name) / "blocked.ogg",
+                    file_method="utterance", api_version="3", transport="rest", fmt="oggopus")
+        self.assertEqual(caught.exception.category, "PREREQUISITE")
+        post.assert_not_called()
+
+    def test_unexpected_duration_split_rechecks_joiner_before_more_calls(self):
+        from yandex_speech.tts_capabilities import Capability
+        rejection = SpeechError("LIMIT", "duration", code="UTTERANCE_LIMIT")
+        with patch("yandex_speech.tts_capabilities.probe_joiner",
+                   return_value=Capability("absent", "synthetic ffmpeg missing")), patch(
+                "yandex_speech.tts_v3.rest_synthesize", side_effect=rejection) as provider:
+            with self.assertRaises(SpeechError) as caught:
+                self.client.synthesize("Тест длительности.", Path(self.tmp.name) / "blocked.ogg",
+                    file_method="utterance", api_version="3", transport="rest", fmt="oggopus")
+        self.assertEqual(caught.exception.category, "PREREQUISITE")
+        self.assertEqual(provider.call_count, 1)
+
+    def test_started_or_uncertain_work_never_replays_another_route(self):
+        from tests.test_tts_selection import RUNTIME
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch("yandex_speech.tts_v3.grpc_synthesize",
+                   side_effect=SpeechError("SUBMISSION_UNCERTAIN", "synthetic unknown")) as grpc, patch(
+                "yandex_speech.tts_v3.rest_synthesize") as rest:
+            with self.assertRaises(SpeechError):
+                self.client.synthesize("Тест.", Path(self.tmp.name) / "uncertain.mp3",
+                    file_method="utterance", api_version="3")
+        self.assertEqual(grpc.call_count, 1)
+        rest.assert_not_called()
