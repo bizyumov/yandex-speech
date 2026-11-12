@@ -95,7 +95,7 @@ def transcribe_recording(client, source, options):
     legacy_allowed = version in {"auto", "1"} and policy in {"auto", "rest"} and not metadata and not require_job and (raw or version == "1")
     supplied_uri = getattr(source, "uri", None) or (isinstance(source, str) and source.startswith("https://"))
     cloud_required = options.get("use_storage") is True or options.get("bucket") is not None and options.get("use_storage") is not False
-    cloud_preferred = cloud_required or options.get("use_storage") is not False and bool(
+    cloud_available = cloud_required or options.get("use_storage") is not False and bool(
         settings.value("object_storage").get("bucket"))
     routing = {"requested_api_version": version, "requested_transport": policy, "attempts": [], "reasons": []}
 
@@ -126,7 +126,7 @@ def transcribe_recording(client, source, options):
         if policy == "grpc" or cloud_required:
             raise SpeechError("CONFIG", "API v1 conflicts with the selected transport or storage operation")
         return legacy()
-    if (legacy_allowed and raw and policy == "auto" and not supplied_uri and not cloud_preferred
+    if (legacy_allowed and raw and policy == "auto" and not supplied_uri and not cloud_required
             and _duration(source, options.get("audio_input"), options.get("audio_track"),
                           client._remaining(deadline, cap=None)) <= 30_000):
         routing["reasons"].append({"kind": "short-raw-direct", "message": "eligible unformatted short recording"})
@@ -137,22 +137,26 @@ def transcribe_recording(client, source, options):
                 raise
             routing["reasons"].append({"kind": "direct-local-limit", "category": error.category})
 
-    modes = ["uri"] if supplied_uri else ["inline"]
-    if cloud_preferred and not supplied_uri:
-        try:
-            _storage_ready(client, options)
-        except SpeechError as error:
-            if cloud_required or error.category == "CONFIG":
-                raise
-            routing["reasons"].append({"kind": "storage-unavailable", "category": error.category, "code": error.code})
-        else:
-            modes = ["storage"] if cloud_required else ["storage", "inline"]
+    modes = ["uri"] if supplied_uri else (["storage"] if cloud_required else ["inline"])
+    if cloud_available and not supplied_uri and not cloud_required:
+        modes.append("storage")
     transports = ["grpc", "rest"] if policy == "auto" else [policy]
     last_error, storage_disabled, working_source = None, False, source
     for transport in transports:
+        inline_oversized = False
         for mode in modes:
-            if mode == "storage" and storage_disabled:
-                continue
+            if mode == "storage":
+                if storage_disabled or not cloud_required and not inline_oversized:
+                    continue
+                try:
+                    _storage_ready(client, options)
+                except SpeechError as error:
+                    if cloud_required or error.category == "CONFIG":
+                        raise
+                    storage_disabled = True
+                    routing["reasons"].append({"kind": "storage-unavailable", "category": error.category, "code": error.code})
+                    last_error = error
+                    continue
             selected = dict(options)
             selected.update(api_version="3", transport=transport, use_storage=mode == "storage",
                             deadline_seconds=client._remaining(deadline, cap=None))
@@ -176,6 +180,7 @@ def transcribe_recording(client, source, options):
                     if owned is not None:
                         working_source = owned
                     break
+                inline_oversized = mode == "inline" and error.code == "INLINE_SIZE"
                 continue
             job.data["routing"] = copy.deepcopy(routing)
             job.save()

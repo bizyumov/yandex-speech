@@ -63,6 +63,8 @@ jobs:
         run: python -m unittest tests.test_discord_ingress
       - name: Run offline acceptance
         run: python -m tests --increment feedback --profile ${{ matrix.profile }}
+      - name: Verify automatic inline and storage routing
+        run: python -m unittest tests.test_recording_routes tests.test_recording_storage_routes -q
       - name: Verify source and wrapper syntax
         shell: bash
         run: |

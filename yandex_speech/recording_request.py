@@ -24,7 +24,7 @@ def inline_size_error(size, limit, *, representation="prepared audio", audio_lim
         "--bucket EXISTING_BUCKET --output OUTPUT; or explicitly recognize every inline part: "
         "python scripts/transcribe.py INPUT --mode async --api-version 3 --transport rest "
         "--split-inline --output OUTPUT. Configured storage defaults remain usable; "
-        "this diagnostic starts no paid request or infrastructure change.")
+        "this diagnostic starts no paid request or infrastructure change.", code="INLINE_SIZE")
 
 def file_source(audio=None, *, uri=None, source_info=None, inline_limit=MAX_INLINE_BYTES,
                 duration_limit=MAX_FILE_DURATION_MS, storage_limit=MAX_STORAGE_BYTES, mono_required=False,

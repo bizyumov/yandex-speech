@@ -156,7 +156,8 @@ class RecordingRouteTests(unittest.TestCase):
             with patch.object(self.client, "poll_until_complete", return_value=result("3")):
                 actual = self.client.transcribe_auto(self.path)
         self.assertFalse(start.call_args.kwargs["use_storage"])
-        self.assertEqual(actual["routing"]["reasons"][0]["kind"], "storage-unavailable")
+        self.assertEqual(actual["routing"]["attempts"][0]["input"], "inline")
+        uploader._credentials.assert_not_called()
         with patch.object(self.client, "start_transcription") as start:
             with self.assertRaises(SpeechError) as raised:
                 self.client.transcribe_auto(self.path, use_storage=True)
@@ -174,13 +175,15 @@ class RecordingRouteTests(unittest.TestCase):
         inputs = []
         def start(source, **options):
             inputs.append(options["use_storage"])
+            if len(inputs) == 1:
+                raise SpeechError("LIMIT", "synthetic local inline admission", code="INLINE_SIZE")
             if options["use_storage"]:
                 self.client._uploader.upload(source)
             return self.accepted()
         with patch.object(self.client, "start_transcription", side_effect=start):
             with patch.object(self.client, "poll_until_complete", return_value=result("3")):
                 actual = self.client.transcribe_auto(self.path)
-        self.assertEqual(inputs, [True, False])
+        self.assertEqual(inputs, [False, True, False])
         self.assertTrue(any(reason["kind"] == "storage-denied" for reason in actual["routing"]["reasons"]))
         self.assertEqual(backend.put_object.call_count, 1)
 

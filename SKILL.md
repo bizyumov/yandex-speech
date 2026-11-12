@@ -23,7 +23,7 @@ For S3, call `setup-storage` with the saved static response and your own env, th
 
 Gateway variables load at startup: until its next start, explicitly supply the new variables in immediate speech-generation subprocesses. Saving env does not refresh the running gateway.
 
-Recorded recognition prefers API v3 over gRPC, then compatible REST inline/private storage. Explicit version, timing, speaker and literary requirements are preserved. Text-only v1 fallback requires compatible explicit choices; a short-input fast path never silently changes the requested output. Use [recording options](references/transcription.md) for formats, limits, explicit partitioning and recovery.
+Recorded automatic recognition prefers API v3 over gRPC, then compatible REST. A saved bucket is available capacity, not a storage-first preference: use inline content when admitted. S3 is required for v2 async or for a v3 whole-file job beyond inline admission that still fits the storage bounds; explicit URI/`use_storage=True`/`--bucket` selects it deliberately. Missing gRPC libraries alone do not require S3. Explicit version, timing, speaker and literary requirements are preserved. Text-only v1 fallback requires compatible explicit choices; a short-input fast path never silently changes the requested output. Use [recording options](references/transcription.md) for formats, limits, explicit partitioning and recovery.
 
 ## Preserve preferences
 

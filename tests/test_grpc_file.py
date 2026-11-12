@@ -194,6 +194,23 @@ class GrpcFileTests(unittest.TestCase):
                 build_file_request(audio)
         self.assertEqual(cm.exception.category,"LIMIT")
 
+    def test_auto_oversized_inline_uses_configured_storage_before_submission(self):
+        from tests.test_owned_storage import FakeS3
+        from yandex_speech.storage import ObjectStorageUploader
+        backend = FakeS3()
+        self.client._uploader = ObjectStorageUploader(bucket="configured-private",
+            job_dir=self.root / "uploads", _context=RuntimeContext(user_home=self.root),
+            _client=backend)
+        self.client.adapter_defaults["object_storage"] = {"bucket": "configured-private"}
+        with patch("yandex_speech.grpc_stt.MAX_GRPC_BYTES", 1000):
+            actual = self.client.transcribe_auto(self.path, transport="grpc")
+        self.assertEqual([attempt["input"] for attempt in actual["routing"]["attempts"]],
+                         ["inline", "storage"])
+        self.assertEqual(len(backend.puts), 1)
+        self.assertEqual(len(self.rpc.submissions), 1)
+        self.assertTrue(self.rpc.submissions[0].uri)
+        self.assertTrue(actual["input_complete"])
+
     def test_submit_save_resume_getrecognition_no_resubmission(self):
         job = self.client.start_transcription(self.path, timestamps=True)
         self.assertEqual(job.operation_id, "operation-test")
