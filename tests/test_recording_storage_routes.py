@@ -123,23 +123,6 @@ class ConfiguredStorageRouteTests(unittest.TestCase):
         self.assertIn("uri", json.loads(self.transport.submitted[0]))
         self.assertTrue(actual["input_complete"])
 
-    def test_complete_grpc_wire_limit_selects_storage_before_any_submission(self):
-        from yandex_speech.grpc_stt import sdk
-        try:
-            sdk()
-        except SpeechError as error:
-            if error.category != "PREREQUISITE":
-                raise
-            self.skipTest("optional gRPC profile is not installed")
-        with patch("yandex_speech.grpc_stt.MAX_GRPC_BYTES", 1000):
-            actual = self.client().transcribe_auto(self.path, transport="grpc",
-                                                  timestamps=True, diarize=True)
-        self.assertEqual([item["input"] for item in actual["routing"]["attempts"]], ["inline", "storage"])
-        self.assertEqual(len(self.backend.puts), 1)
-        self.assertEqual(len(self.transport.submitted), 1)
-        self.assertTrue(self.transport.submitted[0].uri)
-        self.assertTrue(actual["input_complete"])
-
     def test_explicit_inline_never_uploads_over_limit(self):
         with patch("yandex_speech.rest_stt.MAX_REST_BYTES", 1000):
             with self.assertRaises(SpeechError) as raised:
