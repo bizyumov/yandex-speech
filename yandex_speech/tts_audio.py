@@ -90,9 +90,10 @@ def join_audio(parts, fmt, sample_rate, *, timeout=120):
         raise SpeechError("PREREQUISITE","ffmpeg is required to assemble complete multipart encoded output")
     with tempfile.TemporaryDirectory(prefix="yandex-speech-assemble-") as directory:
         root=Path(directory)
+        local_format = "ogg" if fmt == "oggopus" else fmt
         files=[]
         for i,part in enumerate(parts):
-            path=root/f"part-{i:06d}.{fmt}"
+            path=root/f"part-{i:06d}.{local_format}"
             path.write_bytes(part)
             files.append(path)
         manifest=root/"concat.txt"
@@ -101,7 +102,7 @@ def join_audio(parts, fmt, sample_rate, *, timeout=120):
         def quote(path):
             return str(path).replace("'","'\\''")
         manifest.write_text("".join("file '"+quote(p)+"'\n" for p in files))
-        target=root/("complete."+fmt)
+        target=root/("complete."+local_format)
         try:
             result=subprocess.run([executable,"-nostdin","-v","error","-f","concat",
                 "-safe","0","-i",str(manifest),"-c:a","copy",str(target)],
