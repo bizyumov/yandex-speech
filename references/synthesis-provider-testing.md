@@ -101,7 +101,9 @@ Verified against the official catalog on 2026-11-09 (34 current voices; implemen
 | denis | Денис | ru-RU | M | livetts | v3; Realtime | casual, formal, neutral, sales | neutral |
 | irina | Ирина | ru-RU | F | livetts | v3; Realtime | formal, narrator, neutral, sales, support | neutral |
 
-The official catalog marks Marina as its default. This skill retains alena as a separately identified legacy v1 compatibility choice; it is not an extra row in the current official catalog. Preserve explicit saved preferences rather than silently changing defaults.
+The official catalog marks Marina as its default. **Alena is available through both API v1 and API v3:** live provider requests on 2026-11-12 using `voice=alena` and neutral style returned HTTP 200 and decodable MP3 audio from both APIs (30,573 bytes; 3.816 seconds each). Invalid-voice controls were rejected, and a v3 Ermil control succeeded. Alena is absent from the current published voice catalog, so it is identified separately from that table.
+
+The installed library currently restricts Alena to API v1. This is a client-side classification error, not evidence of a provider limitation; do not describe Alena as v1-only or merely retained for legacy compatibility. The voice/API routing specification must account for the live v1/v3 result before that library restriction is changed. Preserve explicit saved preferences rather than silently substituting Marina or another voice.
 
 ### Keep the catalog current
 
