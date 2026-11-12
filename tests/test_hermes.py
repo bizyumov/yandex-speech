@@ -386,6 +386,30 @@ class HermesTTSBindingTests(unittest.TestCase):
         self.assertEqual(settings.sources["tts.default_voice"], "config")
         self.assertEqual(settings.sources["tts.default_emotion"], "config")
 
+    def test_native_method_defaults_stay_below_user_file_and_false_is_preserved(self):
+        provider = self.provider({"voice": "ermil", "yandex": {
+            "file_method": "stream", "unsafe_mode": True}})
+        path = self.home / ".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"speech": {"tts": {
+            "file_method": "utterance", "unsafe_mode": False}}}))
+        settings, options, _ = provider._client()._options()
+        self.assertEqual(options["file_method"], "utterance")
+        self.assertFalse(options["unsafe_mode"])
+        self.assertEqual(settings.sources["tts.file_method"], "config")
+
+    def test_file_stream_readiness_checks_selected_interface_and_keeps_pcm_distinct(self):
+        from tests.test_tts_selection import RUNTIME, MISSING, READY
+        from yandex_speech.tts_capabilities import RuntimeCapabilities
+        provider = self.provider({"voice": "ermil", "yandex": {"file_method": "stream"}})
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME):
+            self.assertTrue(provider.is_available())
+        with patch("yandex_speech.tts_selection.probe_runtime",
+                   return_value=RuntimeCapabilities(READY, READY, READY, MISSING)):
+            self.assertFalse(provider.is_available())
+        voices = {voice["id"]: voice for voice in provider.list_voices()}
+        self.assertEqual(voices["alena"]["display"], "alena")
+
     def test_foreign_ambient_defaults_and_credentials_are_not_read(self):
         with patch.dict(os.environ, {"YANDEX_SPEECH_API_KEY": "foreign-synthetic",
                                     "HERMES_TTS_VOICE": "ermil",
@@ -530,8 +554,11 @@ class HermesTTSBindingTests(unittest.TestCase):
         self.assertTrue(all(path.read_bytes() == b"synthetic adapter payload" for path in results))
 
     def test_compatible_general_and_livetts_pcm_are_advertised(self):
+        from tests.test_tts_selection import RUNTIME
         for voice in ("ermil", "sergey"):
-            with self.subTest(voice=voice):
+            with self.subTest(voice=voice), patch(
+                    "yandex_speech.tts_capabilities.probe_runtime", return_value=RUNTIME), patch(
+                    "yandex_speech.tts_v3.grpc_sdk", return_value=(None, None, None)):
                 provider = self.provider({"voice": voice})
                 self.assertTrue(provider.is_available())
                 self.assertTrue(provider.streams_pcm)

@@ -33,7 +33,8 @@ class YandexTTSProvider(TTSProvider):
         native = self.profile.get("yandex") or {}
         adapter = {}
         for source, target in (("language", "default_lang"), ("role", "default_emotion"),
-                               ("api_version", "api_version"), ("transport", "transport")):
+                               ("api_version", "api_version"), ("transport", "transport"),
+                               ("file_method", "file_method"), ("unsafe_mode", "unsafe_mode")):
             if native.get(source) is not None:
                 adapter[target] = native[source]
         for source, target, hint in (("voice", "default_voice", voice),
@@ -56,11 +57,23 @@ class YandexTTSProvider(TTSProvider):
             raise SpeechError("CONFIG", "native replies require plain text; use the explicit skill SSML operation")
         if pcm:
             if (options["api_version"] == "1" or options["transport"] == "rest"
+                    or options.get("file_method") == "utterance"
                     or options.get("unsafe_mode") or options.get("duration_ms")
                     or "3" not in options["_voice_info"]["versions"]):
                 raise SpeechError("CONFIG", "effective settings do not support native PCM streaming")
             options = dict(options, default_format="lpcm", sample_rate_hertz=24000)
             version = "3"
+        if pcm:
+            from yandex_speech.tts_capabilities import probe_runtime
+            capability = probe_runtime(dict(options, model=options["_model"], role=options["_role"])).stream
+            if not capability.ready:
+                raise SpeechError("PREREQUISITE", capability.reason)
+        elif options["file_method"] != "auto":
+            from yandex_speech.tts_selection import plan_synthesis
+            from yandex_speech.tts_stream_file import stream_contract
+            plan = plan_synthesis("Native availability check.", options, stream_contract=stream_contract(options),
+                sources=settings.sources, config_path=settings.path, profile_scope=self.workspace)
+            version = plan.api_version
         if version == "3":
             from yandex_speech.tts_v3 import request_body
             request_body("Native availability check.", options, sources=settings.sources)
@@ -88,7 +101,7 @@ class YandexTTSProvider(TTSProvider):
                 {"id": "livetts", "display": "Yandex LiveTTS"}]
 
     def list_voices(self):
-        return [{"id": name, "display": name + (" (legacy)" if name == "alena" else ""),
+        return [{"id": name, "display": name,
                  "language": info["language"], "model": info["model"]}
                 for name, info in CATALOG.items()]
 

@@ -75,6 +75,7 @@ def check(*, _context=None, _environment=None, _probe=None):
             {"route": "over-limit async partitioning", "status": "implemented", "tradeoff": "Explicit compatible inline partitions retain complete samples and durable recovery; speaker labels remain partition-local."},
         ],
     }
+    report["synthesis"] = synthesis_readiness(settings, key_present=key_present)
     if _probe is not None and key_present:
         try:
             result = _probe()
@@ -89,6 +90,59 @@ def check(*, _context=None, _environment=None, _probe=None):
             report["probe_error"] = {"category": error.category}
     return report
 
+
+
+def synthesis_readiness(settings, *, key_present=False, text=None, host_sink_ready=None):
+    """Local selected-operation readiness, without a paid call or host-sink assumption."""
+    from dataclasses import asdict
+    from .tts_capabilities import probe_runtime
+    from .tts_selection import plan_synthesis
+    from .tts_voices import resolve_voice
+    report = {"file_ready": False, "pcm_stream_ready": False,
+              "host_sink_ready": host_sink_ready, "host_sink_status": "unverified" if host_sink_ready is None else "caller-verified",
+              "permissions": "unverified", "availability_kind": "local-only",
+              "input_scope": "actual SDK input" if text is not None else "representative input; final input unknown",
+              "automatic_routing_active": False, "exclusions": [],
+              "native_boundary": "Per-callback SDK preflight cannot establish undisclosed whole-message length or host combination/delivery."}
+    try:
+        options = resolve_voice(settings.value("tts"), settings.sources)
+        runtime = probe_runtime()
+        report["dependencies"] = {name: asdict(getattr(runtime, name)) for name in
+                                  ("http", "grpc", "utterance", "stream")}
+        if not runtime.http.ready:
+            raise SpeechError("PREREQUISITE", "base TTS dependency: " + runtime.http.reason)
+        from .tts_stream_file import stream_contract
+        runtime = probe_runtime(dict(options, model=options["_model"], role=options["_role"]))
+        report["effective"] = {"voice": options["default_voice"], "model": options["_model"],
+            "role": options["_role"] or options["_voice_info"]["default_role"],
+            "format": options["default_format"], "file_method": options["file_method"]}
+        report["dependencies"] = {name: asdict(getattr(runtime, name)) for name in
+                                  ("http", "grpc", "utterance", "stream")}
+        pcm_options = dict(options, default_format="lpcm", sample_rate_hertz=24000)
+        pcm_runtime = probe_runtime(dict(pcm_options, model=options["_model"], role=options["_role"]))
+        report["pcm_stream_ready"] = bool(key_present and pcm_runtime.http.ready and pcm_runtime.stream.ready
+            and options["api_version"] != "1" and options["transport"] != "rest"
+            and options["file_method"] != "utterance" and "3" in options["_voice_info"]["versions"]
+            and not options.get("unsafe_mode") and not options.get("duration_ms"))
+        plan = plan_synthesis(text if text is not None else "Readiness preview.", options,
+            runtime=runtime, stream_contract=stream_contract(options), sources=settings.sources,
+            config_path=settings.path)
+        report["operation"] = {"api_version": plan.api_version, "transport": plan.transport,
+            "method": plan.method, "planned_parts": len(plan.parts), "assembly": plan.assembly,
+            "reason": plan.reason, "output_budget_bytes": 256 * 1024 * 1024}
+        report["exclusions"] = [asdict(item) for item in plan.exclusions]
+        if options["file_method"] == "auto":
+            report["selection_status"] = "preview; automatic call-site activation awaits native acceptance"
+            report["file_ready"] = None if key_present else False
+        else:
+            report["selection_status"] = "explicit complete-file operation"
+            report["file_ready"] = bool(key_present)
+        if not key_present:
+            report["error"] = {"category": "AUTH", "message": "YANDEX_SPEECH_API_KEY is missing"}
+    except SpeechError as error:
+        report["error"] = {"category": error.category, "message": str(error)}
+        report["exclusions"] = [asdict(item) for item in getattr(error, "exclusions", ())]
+    return report
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
