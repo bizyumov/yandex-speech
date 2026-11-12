@@ -410,6 +410,25 @@ class HermesTTSBindingTests(unittest.TestCase):
         voices = {voice["id"]: voice for voice in provider.list_voices()}
         self.assertEqual(voices["alena"]["display"], "alena")
 
+    def test_native_receipt_exposes_actual_route_without_credentials_or_text(self):
+        provider = self.provider(fake_output=True)
+        client = provider._client()
+        client.last_synthesis = {"api_version": "3", "transport": "grpc", "method": "stream",
+            "voice": "ermil", "model": "general", "role": "good", "parts": 2,
+            "api_key": "private credential sentinel", "text": "private transcript sentinel"}
+        with patch.object(provider, "_client", return_value=client), self.assertLogs(
+                "integrations.hermes.tts_provider", level="INFO") as logs:
+            result = provider.synthesize("synthetic", self.home / "receipt.ogg", format="ogg")
+        message = logs.output[-1].split("Yandex native TTS receipt ", 1)[1]
+        record = json.loads(message)
+        self.assertEqual((record["api_version"], record["transport"], record["method"]), ("3", "grpc", "stream"))
+        self.assertEqual(record["parts"], 2)
+        self.assertEqual(record["output"], result)
+        self.assertEqual(record["input_characters"], len("synthetic"))
+        self.assertNotIn("sentinel", message)
+        self.assertNotIn("api_key", record)
+        self.assertGreaterEqual(record["elapsed_seconds"], 0)
+
     def test_foreign_ambient_defaults_and_credentials_are_not_read(self):
         with patch.dict(os.environ, {"YANDEX_SPEECH_API_KEY": "foreign-synthetic",
                                     "HERMES_TTS_VOICE": "ermil",

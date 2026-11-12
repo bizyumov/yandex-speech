@@ -1,5 +1,8 @@
 """Native Hermes file/PCM synthesis with per-call profile-bound clients."""
 from pathlib import Path
+import json
+import logging
+import time
 import shutil
 import stat
 import tempfile
@@ -134,6 +137,7 @@ class YandexTTSProvider(TTSProvider):
     def synthesize(self, text, output_path, *, voice=None, model=None, speed=None,
                    format="mp3", **extra):
         from yandex_speech.artifacts import atomic_write
+        started = time.monotonic()
         requested = Path(output_path)
         self._empty_allocation(requested)
         fmt = {"ogg": "oggopus", "opus": "oggopus"}.get(format, format)
@@ -156,6 +160,15 @@ class YandexTTSProvider(TTSProvider):
             output = target if before is None else target.with_name(
                 target.stem + "-" + uuid.uuid4().hex + extension)
             atomic_write(output, staged_output.read_bytes())
+            metadata = getattr(client, "last_synthesis", {})
+            receipt = {name: metadata[name] for name in (
+                "api_version", "transport", "method", "voice", "model", "role", "format", "parts",
+                "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes")
+                if name in metadata}
+            receipt.update(output=str(output), input_characters=len(text),
+                           elapsed_seconds=time.monotonic()-started)
+            receipt.setdefault("method", "utterance")
+            logging.getLogger(__name__).info("Yandex native TTS receipt %s", json.dumps(receipt))
             return str(output)
         except Exception as error:
             retain = getattr(error, "partial_dir", None) is not None or staged_output.is_file()
