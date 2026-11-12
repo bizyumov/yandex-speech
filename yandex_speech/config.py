@@ -18,7 +18,7 @@ DEFAULTS = {
     "language_code": "ru-RU", "transport": "auto", "api_version": "auto",
     "profanity_filter": False, "literature_text": True,
     "object_storage": {"endpoint": "https://storage.yandexcloud.net", "prefix": "speechkit"},
-    "tts": {"api_version": "auto", "transport": "auto", "text_format": "plain",
+    "tts": {"api_version": "auto", "transport": "auto", "file_method": "auto", "text_format": "plain",
             "default_voice": "alena", "default_lang": "ru-RU", "default_format": "mp3",
             "default_speed": 1.0, "default_emotion": "neutral", "model": "auto",
             "role": "auto", "unsafe_mode": False, "sample_rate_hertz": 48000,
@@ -29,7 +29,7 @@ SCHEMA = {
     "language_code": str, "transport": str, "api_version": str,
     "profanity_filter": bool, "literature_text": bool,
     "object_storage": {"bucket": str, "endpoint": str, "prefix": str},
-    "tts": {"api_version": str, "transport": str, "text_format": str,
+    "tts": {"api_version": str, "transport": str, "file_method": str, "text_format": str,
             "default_voice": str, "default_lang": str, "default_format": str,
             "default_speed": float, "default_emotion": str, "model": str,
             "role": str, "unsafe_mode": bool, "sample_rate_hertz": int,
@@ -92,6 +92,8 @@ def _validate(values, schema=SCHEMA, prefix="speech") -> None:
             valid = type(value) is rule and (rule is not str or bool(value.strip()))
         if not valid:
             raise SpeechError("CONFIG", f"invalid type or value for {name}")
+        if key == "file_method" and value not in {"auto", "utterance", "stream"}:
+            raise SpeechError("CONFIG", f"unsupported {name}")
         if key == "transport" and value not in {"auto", "grpc", "rest"}:
             raise SpeechError("CONFIG", f"unsupported {name}")
         if key == "api_version" and value not in ({"auto", "1", "3"} if prefix.endswith(".tts") else {"auto", "1", "2", "3"}):

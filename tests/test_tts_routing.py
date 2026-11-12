@@ -33,6 +33,39 @@ class SynthesisRoutingTests(unittest.TestCase):
                     self.client.synthesize_bytes("Тест.", **kwargs)
         post.assert_not_called()
 
+    def resolved(self, **values):
+        from yandex_speech.config import resolve_settings
+        from yandex_speech.tts_voices import resolve_voice
+        settings = resolve_settings(_context=RuntimeContext(user_home=Path(self.tmp.name)),
+            _environment={}, _explicit={"tts": values})
+        return resolve_voice(settings.value("tts"), settings.sources)
+
+    def test_alena_supports_confirmed_both_utterance_apis(self):
+        from yandex_speech.tts_voices import select_version
+        for version in ("1", "3"):
+            with self.subTest(version=version):
+                options = self.resolved(default_voice="alena", role="neutral", api_version=version)
+                self.assertEqual(select_version(options), version)
+                self.assertEqual(options["_model"], "general")
+
+    def test_explicit_method_conflicts_reject_without_synthesis(self):
+        from yandex_speech.tts_voices import select_version
+        conflicts = [
+            {"file_method": "stream", "api_version": "1"},
+            {"file_method": "stream", "transport": "rest"},
+            {"file_method": "stream", "unsafe_mode": True},
+            {"file_method": "stream", "text_format": "ssml"},
+            {"unsafe_mode": True, "api_version": "1"},
+            {"unsafe_mode": True, "text_format": "ssml"},
+        ]
+        with patch("scripts.tts.requests.post") as post:
+            for values in conflicts:
+                with self.subTest(values=values), self.assertRaises(SpeechError) as caught:
+                    select_version(self.resolved(default_voice="ermil", **values))
+                self.assertEqual(caught.exception.category, "CONFIG")
+        post.assert_not_called()
+        self.assertEqual(select_version(self.resolved(file_method="stream", unsafe_mode=False)), "3")
+
     def test_language_default_is_used_only_when_voice_is_builtin(self):
         with patch("scripts.tts.requests.post") as post:
             post.return_value.status_code=200
