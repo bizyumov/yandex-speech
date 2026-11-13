@@ -185,203 +185,363 @@
     }
   },
   "increments": {
-  "feedback": {
-    "schema_version": 1,
-    "increment": "feedback",
-    "scope": "Shipping uploaded-recording, setup/preference and maintained voice/API/model catalog feedback. Voice previews are generated on request; a fixed sample pack and mandatory listening are not release gates. Existing Discord is accepted. Live meeting recording, extra Discord modes, shared idle-default rollout and full phoneme tooling are deferred.",
-    "acceptance": {
-      "AC21": {
-        "offline": [
-          "tests.test_rest_recording",
-          "tests.test_rest_stt"
-        ],
-        "provider": [
-          "tests.provider.test_rest_recording.LiveRestRecordingTests.test_rest_inline_two_speakers_without_generated_sdk_and_cli_cache_recovery"
-        ],
-        "host": []
-      },
-      "AC22": {
-        "offline": [
-          "tests.test_recording_routes"
-        ],
-        "provider": [
-          "tests.provider.test_recording_routes"
-        ],
-        "host": []
-      },
-      "AC23": {
-        "offline": [
-          "tests.test_overlap",
-          "tests.test_partition_audio"
-        ],
-        "provider": [
-          "tests.provider.test_overlap"
-        ],
-        "host": []
-      },
-      "AC24": {
-        "offline": [
-          "tests.test_owned_storage",
-          "tests.test_storage"
-        ],
-        "provider": [
-          "tests.provider.test_owned_storage"
-        ],
-        "host": []
-      },
-      "AC25": {
-        "offline": [
-          "tests.test_rest_recording",
-          "tests.test_job_recovery"
-        ],
-        "provider": [
-          "tests.provider.test_rest_recording.LiveRestRecordingTests.test_accepted_grpc_operation_recovers_through_rest_without_another_submission"
-        ],
-        "host": []
-      },
-      "AC26": {
-        "offline": [
-          "tests.test_recording_partitions",
-          "tests.test_partition_jobs",
-          "tests.test_partition_assembly",
-          "tests.test_recording_maximum"
-        ],
-        "provider": [
-          "tests.provider.test_recording_maximum.LiveMaximumRecordingTests"
-        ],
-        "host": []
-      },
-      "AC27": {
-        "offline": [
-          "tests.test_cloud_setup",
-          "tests.test_key_env",
-          "tests.test_storage_setup"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC28": {
-        "offline": [
-          "tests.test_readiness",
-          "tests.test_cloud_setup",
-          "tests.test_key_env",
-          "tests.test_storage_setup"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC49": {
-        "offline": [
-          "tests.test_media",
-          "tests.test_grpc_file.GrpcFileTests.test_native_mp3_survives_nonzero_start_and_stereo_without_pcm_expansion"
-        ],
-        "provider": [
-          "tests.provider.test_recording.LiveRecordingTests.test_native_stereo_mp3_uses_encoded_bytes_with_nonzero_start"
-        ],
-        "host": []
-      },
-      "AC50": {
-        "offline": [
-          "tests.test_media",
-          "tests.test_grpc_file.GrpcFileTests.test_native_mp3_survives_nonzero_start_and_stereo_without_pcm_expansion"
-        ],
-        "provider": [
-          "tests.provider.test_recording.LiveRecordingTests.test_native_stereo_mp3_uses_encoded_bytes_with_nonzero_start"
-        ],
-        "host": []
-      },
-      "AC51": {
-        "offline": [
-          "tests.test_media",
-          "tests.test_grpc_file",
-          "tests.test_rest_recording"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC52": {
-        "offline": [
-          "tests.test_tts_routing",
-          "tests.test_voice_catalog"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC53": {
-        "offline": [
-          "tests.test_tts_text",
-          "tests.test_tts_ssml",
-          "tests.test_tts_boundaries",
-          "tests.test_hermes_ssml"
-        ],
-        "provider": [],
-        "host": [
-          "tests.provider.test_hermes_ssml.LiveHermesSSMLTests.test_registered_ssml_tool_preserves_markup_and_voice_media"
-        ]
-      },
-      "AC54": {
-        "offline": [
-          "tests.test_tts_routing",
-          "tests.test_config",
-          "tests.test_hermes.HermesTTSBindingTests"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC56": {
-        "offline": [
-          "tests.test_stock_setup",
-          "tests.test_hermes"
-        ],
-        "provider": [],
-        "host": [
-          "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
-        ]
-      },
-      "AC57": {
-        "offline": [
-          "tests.test_config",
-          "tests.test_stock_setup",
-          "tests.test_hermes"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC58": {
-        "offline": ["tests.test_baseline", "tests.test_stock_setup"],
-        "provider": [],
-        "host": ["tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"]
-      },
-      "AC61": {
-        "offline": [
-          "tests.test_hermes.HermesTTSBindingTests"
-        ],
-        "provider": [],
-        "host": [
-          "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
-        ],
-        "review": [
-          "telegram-delivery"
-        ]
-      },
-      "AC65": {
-        "offline": [
-          "tests.test_voice_catalog"
-        ],
-        "provider": [],
-        "host": []
-      },
-      "AC66": {
-        "offline": [
-          "tests.test_voice_catalog",
-          "tests.test_tts_routing"
-        ],
-        "provider": [],
-        "host": []
+    "feedback": {
+      "schema_version": 1,
+      "increment": "feedback",
+      "scope": "Shipping uploaded-recording, setup/preference and maintained voice/API/model catalog feedback. Voice previews are generated on request; a fixed sample pack and mandatory listening are not release gates. Existing Discord is accepted. Live meeting recording, extra Discord modes, shared idle-default rollout and full phoneme tooling are deferred.",
+      "acceptance": {
+        "AC21": {
+          "offline": [
+            "tests.test_rest_recording",
+            "tests.test_rest_stt"
+          ],
+          "provider": [
+            "tests.provider.test_rest_recording.LiveRestRecordingTests.test_rest_inline_two_speakers_without_generated_sdk_and_cli_cache_recovery"
+          ],
+          "host": []
+        },
+        "AC22": {
+          "offline": [
+            "tests.test_recording_routes"
+          ],
+          "provider": [
+            "tests.provider.test_recording_routes"
+          ],
+          "host": []
+        },
+        "AC23": {
+          "offline": [
+            "tests.test_overlap",
+            "tests.test_partition_audio"
+          ],
+          "provider": [
+            "tests.provider.test_overlap"
+          ],
+          "host": []
+        },
+        "AC24": {
+          "offline": [
+            "tests.test_owned_storage",
+            "tests.test_storage"
+          ],
+          "provider": [
+            "tests.provider.test_owned_storage"
+          ],
+          "host": []
+        },
+        "AC25": {
+          "offline": [
+            "tests.test_rest_recording",
+            "tests.test_job_recovery"
+          ],
+          "provider": [
+            "tests.provider.test_rest_recording.LiveRestRecordingTests.test_accepted_grpc_operation_recovers_through_rest_without_another_submission"
+          ],
+          "host": []
+        },
+        "AC26": {
+          "offline": [
+            "tests.test_recording_partitions",
+            "tests.test_partition_jobs",
+            "tests.test_partition_assembly",
+            "tests.test_recording_maximum"
+          ],
+          "provider": [
+            "tests.provider.test_recording_maximum.LiveMaximumRecordingTests"
+          ],
+          "host": []
+        },
+        "AC27": {
+          "offline": [
+            "tests.test_cloud_setup",
+            "tests.test_key_env",
+            "tests.test_storage_setup"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC28": {
+          "offline": [
+            "tests.test_readiness",
+            "tests.test_cloud_setup",
+            "tests.test_key_env",
+            "tests.test_storage_setup"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC49": {
+          "offline": [
+            "tests.test_media",
+            "tests.test_grpc_file.GrpcFileTests.test_native_mp3_survives_nonzero_start_and_stereo_without_pcm_expansion"
+          ],
+          "provider": [
+            "tests.provider.test_recording.LiveRecordingTests.test_native_stereo_mp3_uses_encoded_bytes_with_nonzero_start"
+          ],
+          "host": []
+        },
+        "AC50": {
+          "offline": [
+            "tests.test_media",
+            "tests.test_grpc_file.GrpcFileTests.test_native_mp3_survives_nonzero_start_and_stereo_without_pcm_expansion"
+          ],
+          "provider": [
+            "tests.provider.test_recording.LiveRecordingTests.test_native_stereo_mp3_uses_encoded_bytes_with_nonzero_start"
+          ],
+          "host": []
+        },
+        "AC51": {
+          "offline": [
+            "tests.test_media",
+            "tests.test_grpc_file",
+            "tests.test_rest_recording"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC52": {
+          "offline": [
+            "tests.test_tts_routing",
+            "tests.test_voice_catalog"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC53": {
+          "offline": [
+            "tests.test_tts_text",
+            "tests.test_tts_ssml",
+            "tests.test_tts_boundaries",
+            "tests.test_hermes_ssml"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_hermes_ssml.LiveHermesSSMLTests.test_registered_ssml_tool_preserves_markup_and_voice_media"
+          ]
+        },
+        "AC54": {
+          "offline": [
+            "tests.test_tts_routing",
+            "tests.test_config",
+            "tests.test_hermes.HermesTTSBindingTests"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC56": {
+          "offline": [
+            "tests.test_stock_setup",
+            "tests.test_hermes"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
+          ]
+        },
+        "AC57": {
+          "offline": [
+            "tests.test_config",
+            "tests.test_stock_setup",
+            "tests.test_hermes"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC58": {
+          "offline": [
+            "tests.test_baseline",
+            "tests.test_stock_setup"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
+          ]
+        },
+        "AC61": {
+          "offline": [
+            "tests.test_hermes.HermesTTSBindingTests"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_synthesis.LiveSynthesisTests.test_standard_hermes_tool_uses_configured_yandex_provider"
+          ],
+          "review": [
+            "telegram-delivery"
+          ]
+        },
+        "AC65": {
+          "offline": [
+            "tests.test_voice_catalog"
+          ],
+          "provider": [],
+          "host": []
+        },
+        "AC66": {
+          "offline": [
+            "tests.test_voice_catalog",
+            "tests.test_tts_routing"
+          ],
+          "provider": [],
+          "host": []
+        }
+      }
+    },
+    "issue83": {
+      "schema_version": 1,
+      "increment": "issue83",
+      "scope": "Issue #83 complete synthesis routing and real designated-agent commissioning in <250, 250–4,999 and >5,000 logical characters, plus exact250/5000 boundaries.",
+      "acceptance": {
+        "AC83-01": {
+          "offline": [
+            "tests.test_tts_audio",
+            "tests.test_tts_multipart",
+            "tests.test_tts_dispatch"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": []
+        },
+        "AC83-02": {
+          "offline": [
+            "tests.test_hermes",
+            "tests.test_tts_dispatch"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": []
+        },
+        "AC83-03": {
+          "offline": [
+            "tests.test_config",
+            "tests.test_tts_routing",
+            "tests.test_tts_selection"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_rejections",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_automatic_matrix"
+          ],
+          "review": []
+        },
+        "AC83-04": {
+          "offline": [
+            "tests.test_tts_boundaries",
+            "tests.test_tts_text",
+            "tests.test_tts_ssml",
+            "tests.test_issue83_cases"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": []
+        },
+        "AC83-05": {
+          "offline": [
+            "tests.test_tts_audio",
+            "tests.test_tts_stream_file_grpc",
+            "tests.test_tts_dispatch"
+          ],
+          "provider": [
+            "tests.provider.test_issue83_stream_contracts.LiveStreamContractTests.test_selected_model_role_and_output_framing"
+          ],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": []
+        },
+        "AC83-06": {
+          "offline": [
+            "tests.test_voice_catalog",
+            "tests.test_tts_routing",
+            "tests.test_tts_capabilities",
+            "tests.test_tts_stream_file_grpc"
+          ],
+          "provider": [
+            "tests.provider.test_issue83_stream_contracts.LiveStreamContractTests.test_selected_model_role_and_output_framing"
+          ],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_rejections"
+          ],
+          "review": []
+        },
+        "AC83-07": {
+          "offline": [
+            "tests.test_issue83_cases",
+            "tests.test_tts_dispatch"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": [
+            "issue83-native-quality"
+          ]
+        },
+        "AC83-08": {
+          "offline": [
+            "tests.test_acceptance_runner",
+            "tests.test_readiness"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_automatic_matrix"
+          ],
+          "review": [
+            "issue83-native-quality"
+          ]
+        },
+        "AC83-09": {
+          "offline": [
+            "tests.test_tts_capabilities",
+            "tests.test_tts_selection",
+            "tests.test_config"
+          ],
+          "provider": [],
+          "host": [],
+          "review": []
+        },
+        "AC83-10": {
+          "offline": [
+            "tests.test_tts_audio",
+            "tests.test_tts_capabilities",
+            "tests.test_tts_dispatch",
+            "tests.test_hermes"
+          ],
+          "provider": [
+            "tests.provider.test_issue83_stream_contracts.LiveStreamContractTests.test_selected_model_role_and_output_framing"
+          ],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"
+          ],
+          "review": []
+        },
+        "AC83-11": {
+          "offline": [
+            "tests.test_issue83_cases",
+            "tests.test_issue83_native_fixtures",
+            "tests.test_acceptance_runner"
+          ],
+          "provider": [],
+          "host": [
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_rejections",
+            "tests.provider.test_issue83_native.LiveNativeTests.test_native_automatic_matrix"
+          ],
+          "review": [
+            "issue83-native-quality"
+          ]
+        }
       }
     }
-  }
-},
+  },
   "phases": {
     "3": {
       "schema_version": 1,

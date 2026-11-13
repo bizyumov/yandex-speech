@@ -5,6 +5,37 @@ import unittest
 from pathlib import Path
 
 
+
+def native_review_fixture(root):
+    """Synthetic schema fixtures, never live-generation or listening evidence."""
+    import hashlib
+    from tests.__main__ import source_digest
+    from tests.issue83_cases import native_cases, alena_cases, rollover_cases, automatic_cases
+    groups = [("issue83-native-matrix", native_cases() + alena_cases() + rollover_cases()),
+              ("issue83-native-automatic", automatic_cases())]
+    artifacts, references = [], []
+    for scope, cases in groups:
+        rows = []
+        for case in cases:
+            audio = root / (case["id"] + ".mp3")
+            audio.write_bytes(("synthetic parser fixture " + case["id"]).encode())
+            sha = hashlib.sha256(audio.read_bytes()).hexdigest()
+            artifacts.append({"path": audio.name, "case_id": case["id"], "verdict": "passed", "sha256": sha})
+            rows.append({"id": case["id"], "delivered_file": audio.name, "sha256": sha,
+                         "status": "passed-native-generation-delivery"})
+        document = {"schema_version": 1, "scope": scope, "source_digest": source_digest(),
+            "synthesis_source_digest": source_digest(synthesis=True), "sources_unchanged": True,
+            "credentials_unchanged": True, "rollback": {"restored": True},
+            "all_generation_delivery_cases_passed": True,
+            "expected_case_ids": [case["id"] for case in cases], "cases": rows}
+        native = root / (scope + ".json")
+        native.write_text(json.dumps(document))
+        references.append({"path": native.name, "sha256": hashlib.sha256(native.read_bytes()).hexdigest()})
+    return {"schema_version": 1, "source_digest": source_digest(synthesis=True),
+        "reviews": {"issue83-native-quality": {"verdict": "passed", "reviewer": "synthetic-parser-fixture",
+            "note": "Schema test only; no real generation or listening.",
+            "artifacts": artifacts, "native_receipts": references}}}
+
 class AcceptanceRunnerTests(unittest.TestCase):
     def test_missing_acceptance_and_empty_selector_are_rejected(self):
         from tests.__main__ import read_manifest
@@ -78,6 +109,121 @@ class AcceptanceRunnerTests(unittest.TestCase):
                 path.write_text(json.dumps(value))
                 with self.assertRaises(ValueError):
                     read_manifest(path, increment="feedback")
+
+    def test_issue83_maps_all_criteria_and_requires_native_and_listener_evidence(self):
+        from tests.__main__ import read_manifest, ISSUE83_REQUIRED, parse_args
+        document = read_manifest(Path(__file__).with_name("acceptance.json"), increment="issue83")
+        self.assertEqual(set(document["acceptance"]), ISSUE83_REQUIRED)
+        self.assertEqual(len(ISSUE83_REQUIRED), 11)
+        self.assertTrue(all(record["offline"] for record in document["acceptance"].values()))
+        self.assertTrue(document["acceptance"]["AC83-11"]["host"])
+        self.assertEqual(document["acceptance"]["AC83-11"]["review"], ["issue83-native-quality"])
+        self.assertEqual(parse_args(["--increment", "issue83"]).increment, "issue83")
+        original = json.loads(Path(__file__).with_name("acceptance.json").read_text())
+        del original["increments"]["issue83"]["acceptance"]["AC83-11"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text(json.dumps(original))
+            with self.assertRaises(ValueError):
+                read_manifest(path, increment="issue83")
+
+    def test_live_only_collection_keeps_offline_evidence_pending(self):
+        from tests.__main__ import parse_args
+        args = parse_args(["--increment", "issue83", "--provider", "--host", "--live-only"])
+        self.assertTrue(args.live_only and args.provider and args.host)
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["--increment", "issue83", "--live-only"])
+
+    def test_issue83_listening_cannot_omit_or_repeat_a_required_comparison(self):
+        from tests.__main__ import read_reviews
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = native_review_fixture(root)
+            receipt = root / "review.json"
+            receipt.write_text(json.dumps(original))
+            self.assertEqual(read_reviews(receipt, {"issue83-native-quality"})["issue83-native-quality"], "passed")
+            for mode in ("missing", "failed", "repeated"):
+                record = copy.deepcopy(original)
+                items = record["reviews"]["issue83-native-quality"]["artifacts"]
+                if mode == "missing":
+                    items.pop()
+                elif mode == "failed":
+                    items[0]["verdict"] = "failed"
+                else:
+                    items[-1] = copy.deepcopy(items[0])
+                receipt.write_text(json.dumps(record))
+                with self.subTest(mode=mode), self.assertRaises(ValueError):
+                    read_reviews(receipt, {"issue83-native-quality"})
+
+    def test_native_listening_rejects_wrong_audio_and_stale_generation(self):
+        from tests.__main__ import read_reviews
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = native_review_fixture(root)
+            receipt = root / "review.json"
+            wrong = root / "unrelated.mp3"
+            wrong.write_bytes(b"unrelated synthetic parser fixture")
+            record = copy.deepcopy(original)
+            item = record["reviews"]["issue83-native-quality"]["artifacts"][0]
+            item.update(path=wrong.name, sha256=hashlib.sha256(wrong.read_bytes()).hexdigest())
+            receipt.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, "not the native-generated"):
+                read_reviews(receipt, {"issue83-native-quality"})
+            reference = original["reviews"]["issue83-native-quality"]["native_receipts"][0]
+            native = root / reference["path"]
+            document = json.loads(native.read_text())
+            document["source_digest"] = "stale"
+            native.write_text(json.dumps(document))
+            reference["sha256"] = hashlib.sha256(native.read_bytes()).hexdigest()
+            receipt.write_text(json.dumps(original))
+            with self.assertRaisesRegex(ValueError, "stale"):
+                read_reviews(receipt, {"issue83-native-quality"})
+
+    def test_explicit_listening_gate_precedes_auto_but_cannot_commission_final(self):
+        from tests.__main__ import read_reviews, parse_args
+        from tests.issue83_cases import native_cases, alena_cases, rollover_cases
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = native_review_fixture(root)
+            review = record["reviews"].pop("issue83-native-quality")
+            explicit = {case["id"] for case in native_cases() + alena_cases() + rollover_cases()}
+            review["artifacts"] = [item for item in review["artifacts"] if item["case_id"] in explicit]
+            review["native_receipts"] = review["native_receipts"][:1]
+            record["reviews"]["issue83-explicit-quality"] = review
+            receipt = root / "review.json"
+            receipt.write_text(json.dumps(record))
+            self.assertEqual(read_reviews(receipt, {"issue83-explicit-quality"})["issue83-explicit-quality"], "passed")
+            args = parse_args(["--increment", "issue83", "--review-evidence", str(receipt),
+                               "--validate-explicit-review"])
+            self.assertTrue(args.validate_explicit_review)
+            record["reviews"] = {"issue83-native-quality": review}
+            receipt.write_text(json.dumps(record))
+            with self.assertRaises(ValueError):
+                read_reviews(receipt, {"issue83-native-quality"})
+
+    def test_listening_montage_must_contain_the_native_audio_excerpts(self):
+        from tests.__main__ import verify_native_montage
+        from yandex_speech.tts_audio import wrap_pcm
+        from unittest.mock import patch
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "listen.wav"
+            pcm = b"\1\0" * 48
+            audio.write_bytes(wrap_pcm(pcm, 48000))
+            montage = {"path": audio.name, "sha256": hashlib.sha256(audio.read_bytes()).hexdigest(),
+                       "tail_seconds": 8, "gap_seconds": 1}
+            with patch("tests.__main__.native_tail_pcm", return_value=pcm):
+                verify_native_montage(root, montage, [{"case_id": "fixture"}],
+                                      {"fixture": {"path": root / "original.ogg"}})
+                audio.write_bytes(wrap_pcm(b"\2\0" * 48, 48000))
+                montage["sha256"] = hashlib.sha256(audio.read_bytes()).hexdigest()
+                with self.assertRaisesRegex(ValueError, "does not contain"):
+                    verify_native_montage(root, montage, [{"case_id": "fixture"}],
+                                          {"fixture": {"path": root / "original.ogg"}})
 
     def test_review_receipt_requires_the_heard_artifact_and_current_synthesis_sources(self):
         from tests.__main__ import read_reviews, source_digest
