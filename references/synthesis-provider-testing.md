@@ -23,7 +23,11 @@ Use Python `file_method="utterance"` / `"stream"`, or CLI `--file-method utteran
 
 SSML selects compatible REST v1. A fixed API, transport or method remains fixed; unsupported voice/control combinations fail without substitution. Unsafe false excludes unsafe utterance behavior and still permits streaming.
 
-This candidate exposes explicit methods while default automatic call-site activation awaits its native comparison gate. The reviewed automatic policy ranks complete ready operations: gRPC streamed file, gRPC utterance, REST v3 utterance, then compatible REST v1. It considers the selected voice/controls, actual installed interfaces, partitions and required output assembly before submitting speech.
+Complete-file synthesis defaults to `file_method=auto`. It filters complete ready operations before ranking gRPC streamed file, gRPC utterance, REST v3 utterance, then compatible REST v1. Eligibility includes the selected voice/controls, actual installed interfaces, partitions and required output assembly. A compatible voice can therefore use v3; its v1 support does not force v1.
+
+With no usable gRPC interface, eligible REST operations remain available. Normal v3 utterance may require several 250-character requests and an encoded joiner; a compatible v1 operation that fits one response can win when those complete v3 operations are unavailable. Unsafe mode is used only when explicitly requested. Explicit API/transport/method choices remain constraints, and no paid or uncertain operation is replayed to obtain another route.
+
+Local readiness uses the same saved-control validation as synthesis, including requested WAV sample rates. A selected local route and present key do not verify IAM permission, provider execution, addressed delivery or hearing.
 
 The base HTTP runtime includes requests. gRPC additionally needs its runtime, protobuf parser and usable packaged message/stub interfaces. The proto compiler alone is not a runtime requirement when those interfaces already work. Missing optional gRPC leaves eligible REST methods available; synthesis never installs dependencies.
 

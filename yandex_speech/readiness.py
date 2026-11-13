@@ -97,15 +97,15 @@ def synthesis_readiness(settings, *, key_present=False, text=None, host_sink_rea
     from dataclasses import asdict
     from .tts_capabilities import probe_runtime
     from .tts_selection import plan_synthesis
-    from .tts_voices import resolve_voice
+    from .tts_voices import resolve_file_options
     report = {"file_ready": False, "pcm_stream_ready": False,
               "host_sink_ready": host_sink_ready, "host_sink_status": "unverified" if host_sink_ready is None else "caller-verified",
               "permissions": "unverified", "availability_kind": "local-only",
               "input_scope": "actual SDK input" if text is not None else "representative input; final input unknown",
-              "automatic_routing_active": False, "exclusions": [],
+              "automatic_routing_active": True, "exclusions": [],
               "native_boundary": "Per-callback SDK preflight cannot establish undisclosed whole-message length or host combination/delivery."}
     try:
-        options = resolve_voice(settings.value("tts"), settings.sources)
+        options, _ = resolve_file_options(settings.value("tts"), settings.sources)
         runtime = probe_runtime()
         report["dependencies"] = {name: asdict(getattr(runtime, name)) for name in
                                   ("http", "grpc", "utterance", "stream")}
@@ -131,12 +131,9 @@ def synthesis_readiness(settings, *, key_present=False, text=None, host_sink_rea
             "method": plan.method, "planned_parts": len(plan.parts), "assembly": plan.assembly,
             "reason": plan.reason, "output_budget_bytes": 256 * 1024 * 1024}
         report["exclusions"] = [asdict(item) for item in plan.exclusions]
-        if options["file_method"] == "auto":
-            report["selection_status"] = "preview; automatic call-site activation awaits native acceptance"
-            report["file_ready"] = None if key_present else False
-        else:
-            report["selection_status"] = "explicit complete-file operation"
-            report["file_ready"] = bool(key_present)
+        report["selection_status"] = ("automatic complete-file operation"
+            if options["file_method"] == "auto" else "explicit complete-file operation")
+        report["file_ready"] = bool(key_present)
         if not key_present:
             report["error"] = {"category": "AUTH", "message": "YANDEX_SPEECH_API_KEY is missing"}
     except SpeechError as error:

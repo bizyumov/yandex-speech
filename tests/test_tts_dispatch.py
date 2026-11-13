@@ -75,10 +75,94 @@ class FileDispatchTests(unittest.TestCase):
         self.assertEqual((caught.exception.partial_dir / "part-000000.ogg").read_bytes(), self.first)
         self.assertEqual(self.client.last_synthesis["status"], "incomplete")
 
-    def test_default_automatic_wiring_waits_for_native_comparison(self):
-        with patch.object(self.client, "_synthesize_legacy", return_value=["legacy"]) as legacy:
-            self.assertEqual(self.client.synthesize("Тест.", self.root / "auto.mp3"), ["legacy"])
-        legacy.assert_called_once()
+    def test_default_automatic_file_route_streams_complete_voice_identity(self):
+        for voice, model, role, length in (("ermil", "general", "good", 1000),
+                                          ("sergey", "livetts", "sales", 5500)):
+            with self.subTest(voice=voice, length=length):
+                text, calls = "a" * length, []
+                def collect(piece, options, **kwargs):
+                    calls.append((piece, dict(options)))
+                    data = self.tail if sum(len(item[0]) for item in calls) == length else self.first
+                    return CollectedAudio(data, 3, 2, .01, .02)
+                output = self.root / (voice + "-automatic.ogg")
+                with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch(
+                        "yandex_speech.tts_stream_file.collect_stream_file", side_effect=collect), patch.object(
+                        self.client, "_synthesize_request", return_value=self.first) as utterance:
+                    self.client.synthesize(text, output, voice=voice, model=model, role=role, fmt="oggopus")
+                self.assertEqual("".join(piece for piece, options in calls), text)
+                self.assertEqual(len(calls), (length + 4999) // 5000)
+                self.assertTrue(all(options["default_voice"] == voice and options["_model"] == model
+                    and options["_role"] == role and not options["unsafe_mode"] for piece, options in calls))
+                utterance.assert_not_called()
+                self.assertEqual(self.client.last_synthesis["method"], "stream")
+                self.assertEqual(self.client.last_synthesis["transport"], "grpc")
+                self.assertEqual(self.client.last_synthesis["output_part_lengths"], [len(piece) for piece, _ in calls])
+                pcm = decoded_pcm(output.read_bytes())
+                tail = pcm[-7200:-2400]
+                self.assertGreater(tone_strength(tail, 880), 10 * tone_strength(tail, 440))
+
+    def test_automatic_entry_filters_complete_operations_before_fallback_rank(self):
+        from dataclasses import replace
+        from yandex_speech.tts_capabilities import READY
+        from tests.test_tts_selection import MISSING
+        cases = [
+            ("no-stream", replace(RUNTIME, stream=MISSING), READY, "3", "grpc", 4),
+            ("http-only", replace(RUNTIME, grpc=MISSING, utterance=MISSING, stream=MISSING), READY, "3", "rest", 4),
+            ("no-encoded-joiner", replace(RUNTIME, stream=MISSING), MISSING, "1", "rest", 1),
+        ]
+        for name, runtime, joiner, version, transport, count in cases:
+            with self.subTest(case=name):
+                output, calls = self.root / (name + ".ogg"), []
+                def utterance(piece, settings, options, selected_version, **kwargs):
+                    calls.append((piece, dict(options), selected_version))
+                    return self.first
+                with patch("yandex_speech.tts_selection.probe_runtime", return_value=runtime), patch(
+                        "yandex_speech.tts_selection.probe_joiner", return_value=joiner), patch.object(
+                        self.client, "_synthesize_request", side_effect=utterance), patch(
+                        "yandex_speech.tts_stream_file.collect_stream_file") as stream:
+                    self.client.synthesize("a" * 1000, output, voice="ermil", model="general", role="good", fmt="oggopus")
+                stream.assert_not_called()
+                self.assertEqual(len(calls), count)
+                self.assertEqual("".join(piece for piece, options, selected in calls), "a" * 1000)
+                self.assertTrue(all(selected == version and options["transport"] == transport
+                    and options["default_voice"] == "ermil" and options["_role"] == "good"
+                    for piece, options, selected in calls))
+                self.assertEqual(self.client.last_synthesis["api_version"], version)
+                self.assertEqual(self.client.last_synthesis["transport"], transport)
+                self.assertEqual(self.client.last_synthesis["method"], "utterance")
+
+    def test_automatic_stream_uncertainty_never_replays_another_operation(self):
+        output = self.root / "uncertain-automatic.ogg"
+        failure = SpeechError("SUBMISSION_UNCERTAIN", "synthetic accepted-or-unknown stream")
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch(
+                "yandex_speech.tts_stream_file.collect_stream_file", side_effect=failure) as stream, patch.object(
+                self.client, "_synthesize_request", return_value=self.first) as utterance:
+            with self.assertRaises(SpeechError) as caught:
+                self.client.synthesize("a" * 1000, output, voice="ermil", role="good", fmt="oggopus")
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(stream.call_count, 1)
+        utterance.assert_not_called()
+        self.assertFalse(output.exists())
+        self.assertEqual(self.client.last_synthesis["status"], "incomplete")
+
+    def test_cli_default_file_operation_uses_automatic_route(self):
+        import contextlib
+        import io
+        from scripts.tts import main
+        output = self.root / "cli-automatic.ogg"
+        with patch("sys.argv", ["tts", "Тест.", "--output", str(output), "--voice", "ermil",
+                               "--role", "good", "--format", "oggopus"]), patch(
+                "scripts.tts.TextToSpeech", return_value=self.client), patch(
+                "yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch(
+                "yandex_speech.tts_stream_file.collect_stream_file",
+                return_value=CollectedAudio(self.first, 2, 2, .01, .02)) as stream, patch.object(
+                self.client, "_synthesize_request", return_value=self.first) as utterance, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(), 0)
+        self.assertEqual(stream.call_count, 1)
+        utterance.assert_not_called()
+        self.assertEqual(self.client.last_synthesis["method"], "stream")
+        self.assertTrue(output.exists())
 
     def test_stream_bytes_uses_real_file_method_contract_without_utterance_fallback(self):
         with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch(

@@ -120,3 +120,16 @@ def select_version(options):
     if version == "1" and options["transport"] == "grpc":
         raise SpeechError("CONFIG", "synthesis API v1 requires REST")
     return version
+
+def resolve_file_options(values, sources):
+    """Resolve the shared SDK/readiness controls with their saved provenance."""
+    options = resolve_voice(values, sources)
+    sample_source = sources.get("tts.sample_rate_hertz", "builtin")
+    options["_sample_rate_requested"] = sample_source != "builtin"
+    version = select_version(options)
+    rate_selected = sample_source == "call" or (
+        options["default_format"] == "wav" and options["_sample_rate_requested"])
+    if rate_selected and options["default_format"] != "lpcm" and not (
+            version == "1" and options["default_format"] == "wav"):
+        raise SpeechError("CONFIG", "sample-rate applies to LPCM output, not this container method")
+    return options, version

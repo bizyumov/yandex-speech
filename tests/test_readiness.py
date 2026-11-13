@@ -40,12 +40,52 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(report["operation"]["method"], "utterance")
         self.assertEqual(report["permissions"], "unverified")
 
-    def test_synthesis_automatic_plan_is_preview_until_call_site_activation(self):
-        report = self.check(_environment={"YANDEX_SPEECH_API_KEY": "synthetic"})
-        self.assertIsNone(report["synthesis"]["file_ready"])
-        self.assertFalse(report["synthesis"]["automatic_routing_active"])
-        self.assertIn("preview", report["synthesis"]["selection_status"])
+    def test_synthesis_automatic_plan_reports_local_execution_readiness(self):
+        from tests.test_tts_selection import RUNTIME
+        with patch("yandex_speech.tts_capabilities.probe_runtime", return_value=RUNTIME):
+            report = self.check(_environment={"YANDEX_SPEECH_API_KEY": "synthetic"})
+        self.assertTrue(report["synthesis"]["file_ready"])
+        self.assertTrue(report["synthesis"]["automatic_routing_active"])
+        self.assertEqual(report["synthesis"]["selection_status"], "automatic complete-file operation")
+        self.assertEqual(report["synthesis"]["operation"]["method"], "stream")
         self.assertFalse(report["synthesis"]["host_sink_ready"])
+        self.assertEqual(report["synthesis"]["permissions"], "unverified")
+
+    def test_configured_wav_rate_readiness_matches_actual_sdk_route(self):
+        from scripts.tts import TextToSpeech
+        from yandex_speech.config import resolve_settings
+        from yandex_speech.readiness import synthesis_readiness
+        from yandex_speech.tts_audio import wrap_pcm
+        from tests.test_tts_selection import RUNTIME
+        for version in ("auto", "3"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                config = home / ".config/yandex-speech/config.json"
+                config.parent.mkdir(parents=True)
+                config.write_text(json.dumps({"speech": {"tts": {"default_voice": "ermil",
+                    "model": "general", "default_format": "wav", "sample_rate_hertz": 16000,
+                    "api_version": version}}}))
+                context = RuntimeContext(user_home=home)
+                settings = resolve_settings(_context=context, _environment={})
+                client = TextToSpeech(api_key="synthetic", _context=context, _environment={})
+                with patch("yandex_speech.tts_capabilities.probe_runtime", return_value=RUNTIME), patch(
+                        "yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch.object(
+                        client, "_synthesize_request", return_value=wrap_pcm(b"\0\0" * 160, 16000)) as provider:
+                    report = synthesis_readiness(settings, key_present=True, text="Тест.")
+                    if version == "auto":
+                        client.synthesize("Тест.", home / "configured.wav")
+                        self.assertTrue(report["file_ready"])
+                        self.assertEqual(report["operation"]["api_version"], client.last_synthesis["api_version"])
+                        self.assertEqual(report["operation"]["transport"], client.last_synthesis["transport"])
+                        self.assertEqual(report["operation"]["api_version"], "1")
+                        self.assertEqual(provider.call_count, 1)
+                    else:
+                        with self.assertRaises(SpeechError) as caught:
+                            client.synthesize("Тест.", home / "blocked.wav")
+                        self.assertFalse(report["file_ready"])
+                        self.assertEqual(report["error"]["category"], caught.exception.category)
+                        self.assertEqual(report["error"]["category"], "CONFIG")
+                        provider.assert_not_called()
 
     def test_synthesis_missing_key_never_claims_execution_readiness(self):
         report = self.check(_environment={})

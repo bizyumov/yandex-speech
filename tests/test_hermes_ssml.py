@@ -16,6 +16,13 @@ SSML = '<speak><sub alias="рэст">REST</sub>. <phoneme alphabet="ipa" ph="mə
 
 
 class HermesSSMLToolTests(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        from tests.test_tts_audio import encoded_tone
+        cls.audio = encoded_tone(440)
+        cls.other_audio = encoded_tone(880)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="ssml profile ")
         self.addCleanup(self.tmp.cleanup)
@@ -25,11 +32,11 @@ class HermesSSMLToolTests(unittest.TestCase):
             _secret_resolver=lambda name: "synthetic" if name == "YANDEX_SPEECH_API_KEY" else None)
         self.tool = HermesSSMLTool(self.provider)
 
-    @staticmethod
-    def response(post):
+    @classmethod
+    def response(cls, post):
         post.return_value.status_code = 200
         post.return_value.headers = {"Content-Type": "audio/ogg"}
-        post.return_value.content = b"OggS-synthetic-unit-test-payload"
+        post.return_value.content = cls.audio
 
     def test_explicit_markup_and_preferences_reach_ssml_request(self):
         with patch("scripts.tts.requests.post") as post:
@@ -93,26 +100,38 @@ class HermesSSMLToolTests(unittest.TestCase):
 
     def test_concurrent_calls_keep_distinct_owned_artifacts(self):
         from types import SimpleNamespace
+        from tests.test_tts_audio import decoded_pcm, tone_strength
         texts = ["<speak>Первая реплика.</speak>", "<speak>Вторая реплика.</speak>"]
+        audio = dict(zip(texts, (self.audio, self.other_audio)))
         def response(*unused, **kwargs):
-            payload = kwargs["data"]["ssml"].encode()
             return SimpleNamespace(status_code=200, headers={"Content-Type": "audio/ogg"},
-                                   content=b"OggS" + payload)
+                                   content=audio[kwargs["data"]["ssml"]])
         with patch("scripts.tts.requests.post", side_effect=response):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 results = list(pool.map(lambda text: json.loads(self.tool.handle({"ssml": text})), texts))
         self.assertTrue(all(r["success"] for r in results), results)
         paths = [Path(r["file_path"]) for r in results]
         self.assertEqual(len(set(paths)), 2)
-        for path, text in zip(paths, texts):
+        for path, frequency in zip(paths, (440, 880)):
             self.assertTrue(path.is_relative_to(self.home) and path.is_file())
-            self.assertEqual("".join(ET.fromstring(path.read_bytes()[4:]).itertext()),
-                             "".join(ET.fromstring(text).itertext()))
+            pcm = decoded_pcm(path.read_bytes())
+            self.assertGreater(tone_strength(pcm, frequency),
+                               10 * tone_strength(pcm, 880 if frequency == 440 else 440))
 
     def test_passive_availability_makes_no_request(self):
         with patch("scripts.tts.requests.post") as post:
             self.assertTrue(self.tool.is_available())
         post.assert_not_called()
+
+    def test_truncated_audio_response_is_not_published_or_delivered(self):
+        with patch("scripts.tts.requests.post") as post:
+            self.response(post)
+            post.return_value.content = b"OggS-truncated"
+            result = json.loads(self.tool.handle({"ssml": SSML}))
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"]["category"], "OUTPUT_PARTIAL")
+        self.assertNotIn("media_tag", result)
+        self.assertNotIn("file_path", result)
 
     def test_unknown_failure_does_not_expose_internal_error_or_publish_partial_audio(self):
         with patch.object(self.provider, "_client", side_effect=RuntimeError("synthetic-hidden-token")):
@@ -161,7 +180,7 @@ class HermesSSMLToolTests(unittest.TestCase):
     def test_failed_multipart_synthesis_retains_owned_artifacts_without_delivery_tag(self):
         from types import SimpleNamespace
         response = SimpleNamespace(status_code=200, headers={"Content-Type": "audio/ogg"},
-                                   content=b"OggS-synthetic-first-part")
+                                   content=self.audio)
         text = "<speak>" + "word " * 2000 + "</speak>"
         with patch("scripts.tts.requests.post", side_effect=[response, RuntimeError("synthetic-hidden-token")]):
             result = json.loads(self.tool.handle({"ssml": text}))

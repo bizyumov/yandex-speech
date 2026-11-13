@@ -42,7 +42,9 @@ Native synthesis preserves existing nonempty files and symlinks, returns an arti
 
 ## Complete files and host chunking
 
-`speech.tts.file_method` selects the complete-file producer: `utterance` or `stream` for explicit operation. Streamed-file synthesis uses gRPC v3 internally and still returns a completed audio file to the normal Hermes tool. Progressive PCM uses the separate existing stream interface; a completed file is not speech in a connected voice channel.
+`speech.tts.file_method` defaults to `auto`, which filters complete ready operations and ranks gRPC streamed file, gRPC utterance, REST v3 utterance, then compatible REST v1. Set `utterance` or `stream` to constrain the producer explicitly. Saved API/transport/voice/model/role controls remain fixed; automatic routing never enables unsafe mode itself. Native `tts.yandex.file_method`, `api_version` and `transport` remain adapter defaults below the selected skill user file.
+
+Streamed-file synthesis uses gRPC v3 internally and still returns a completed audio file to the normal Hermes tool. Progressive PCM uses the separate existing stream interface; a completed file is not speech in a connected voice channel.
 
 For the native Yandex binding, stock Hermes 0.23.0's outer cap is 4,000 characters when no provider override applies. The skill then applies its own API/body budgets to each callback. A 5,500-character logical reply can therefore become two host callbacks even when each callback uses one streaming RPC. Report both counts; splitting does not move the complete reply into another length band.
 

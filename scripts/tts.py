@@ -66,12 +66,8 @@ class TextToSpeech:
             ("pitch_shift",pitch_shift),("duration_ms",duration_ms),("duration_policy",duration_policy)] if value is not None}
         settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
                                     _explicit={"tts":values}, _environment=self.environment)
-        from yandex_speech.tts_voices import resolve_voice, select_version
-        options = resolve_voice(settings.value("tts"), settings.sources)
-        options["_sample_rate_requested"] = settings.sources.get("tts.sample_rate_hertz", "builtin") != "builtin"
-        version=select_version(options)
-        if (sample_rate is not None or options["default_format"] == "wav" and options["_sample_rate_requested"]) and options["default_format"]!="lpcm" and not(version=="1" and options["default_format"]=="wav"):
-            raise SpeechError("CONFIG","sample-rate applies to LPCM output, not this container method")
+        from yandex_speech.tts_voices import resolve_file_options
+        options, version = resolve_file_options(settings.value("tts"), settings.sources)
         return settings, options, version
 
     def synthesize_bytes(self, text: str, *, deadline_seconds=120, **kwargs) -> bytes:
@@ -154,10 +150,6 @@ class TextToSpeech:
 
     def synthesize(self, text, output_path, *, overwrite=False, deadline_seconds=1800, **kwargs):
         settings, options, _ = self._options(**kwargs)
-        # Automatic call-site activation follows the explicit-route native comparison.
-        if options["file_method"] == "auto":
-            return self._synthesize_legacy(text, output_path, overwrite=overwrite,
-                deadline_seconds=deadline_seconds, **kwargs)
         return self._synthesize_planned(text, output_path, settings, options,
             overwrite=overwrite, deadline_seconds=deadline_seconds)
 
@@ -299,67 +291,6 @@ class TextToSpeech:
                         "reason": getattr(error, "category", "OUTPUT_PARTIAL")}).encode())
                 except Exception as retention_error:
                     error.partial_retention_error = type(retention_error).__name__
-            raise
-
-    def _synthesize_legacy(self,text,output_path,*,overwrite=False,deadline_seconds=1800,**kwargs) -> list[Path]:
-        import json
-        import math
-        import uuid
-        from collections import deque
-        from yandex_speech.tts_audio import join_audio
-        from yandex_speech.tts_text import partition_plain,v1_fits,bisect_text,partition_ssml,bisect_ssml
-        if type(overwrite) is not bool:
-            raise SpeechError("CONFIG","overwrite must be explicitly boolean")
-        if type(deadline_seconds) not in (int,float) or not math.isfinite(deadline_seconds) or deadline_seconds<=0:
-            raise SpeechError("CONFIG","synthesis deadline must be finite and positive")
-        output=Path(output_path)
-        if output.is_symlink() or output.exists() and (not overwrite or not output.is_file()):
-            raise SpeechError("CONFIG","select an absent output or explicitly overwrite an owned regular file")
-        settings,options,version=self._options(**kwargs)
-        fmt=options["default_format"]
-        limit=5000 if options.get("unsafe_mode") else 250
-        fits=lambda s:v1_fits(s,options) if version=="1" else len(s)<=limit
-        pieces=partition_ssml(text,fits) if options["text_format"]=="ssml" else partition_plain(text,fits)
-        if len(pieces)>1 and fmt in {"mp3","oggopus"} and not has_ffmpeg():
-            raise SpeechError("PREREQUISITE","ffmpeg is required to assemble multipart encoded output")
-        deadline=time.monotonic()+deadline_seconds
-        pending=deque(pieces)
-        completed=[]
-        attempts=0
-        self.last_synthesis={"status":"prepared","api_version":version,"format":fmt}
-        try:
-            while pending:
-                if time.monotonic()>=deadline:
-                    raise SpeechError("TIMEOUT","whole synthesis operation deadline expired")
-                piece=pending.popleft()
-                try:
-                    data=self._synthesize_request(piece,settings,options,version,
-                        deadline_seconds=deadline-time.monotonic())
-                except SpeechError as error:
-                    if error.category=="LIMIT" and error.code=="UTTERANCE_LIMIT" and attempts<32:
-                        smaller=bisect_ssml(piece,fits) if options["text_format"]=="ssml" else bisect_text(piece)
-                        pending.extendleft(reversed(smaller))
-                        attempts+=1
-                        continue
-                    raise
-                completed.append(data)
-            result=join_audio(completed,fmt,options["sample_rate_hertz"],
-                              timeout=deadline-time.monotonic())
-            atomic_write(output,result,overwrite=overwrite)
-            self.last_synthesis.update(status="complete",parts=len(completed),
-                output=str(output),assembly="single" if len(completed)==1 else "complete-container")
-            return [output]
-        except Exception as error:
-            self.last_synthesis.update(status="incomplete",parts=len(completed),output=None)
-            if completed:
-                directory=output.parent/(".yandex-speech-partial-"+uuid.uuid4().hex)
-                directory.mkdir(parents=True,mode=0o700)
-                for i,part in enumerate(completed):
-                    atomic_write(directory/f"part-{i:06d}.{fmt}",part)
-                atomic_write(directory/"manifest.json",json.dumps({
-                    "status":"incomplete","parts":len(completed),"api_version":version,
-                    "format":fmt,"reason":getattr(error,"category","OUTPUT_PARTIAL")}).encode())
-                error.partial_dir=directory
             raise
 
     def stream_audio(self,text_or_fragments,*,deadline_seconds=1800,**kwargs):
