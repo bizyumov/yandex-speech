@@ -129,6 +129,33 @@ class NativeSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "active work"):
             gateway.settle_for_restore(timeout=.01)
 
+    def test_prompt_waits_for_terminal_worker_cleanup_before_return(self):
+        from tests.provider.issue83_fixtures import NativeGateway
+        case = native_cases()[0]
+        output = Path("/synthetic/native.ogg")
+        tag = "[[audio_as_voice]]MEDIA:/synthetic/native.ogg"
+        call = {"id": "owned-call", "function": {"name": "text_to_speech",
+            "arguments": json.dumps({"text": case["text"], "output_path": str(output)})}}
+        rows = [
+            {"id": 1, "role": "assistant", "content": "", "tool_calls": json.dumps([call]),
+             "timestamp": 1.0, "finish_reason": "tool_calls", "tool_call_id": None},
+            {"id": 2, "role": "tool", "content": json.dumps({"success": True, "provider": "yandex",
+                "delivery_file_count": 1, "file_path": str(output), "media_tag": tag}),
+             "tool_calls": None, "timestamp": 2.0, "finish_reason": None, "tool_call_id": "owned-call"},
+            {"id": 3, "role": "assistant", "content": tag, "tool_calls": None,
+             "timestamp": 3.0, "finish_reason": "stop", "tool_call_id": None},
+        ]
+        gateway = object.__new__(NativeGateway)
+        observations = iter([[], rows])
+        gateway.messages = lambda session_id, after=0: next(observations)
+        gateway.rpc = lambda method, params: ({"admission_id": "owned-admission"}
+            if method == "prompt.submit" else {"status": "terminal"})
+        gateway.settle_for_restore = unittest.mock.Mock()
+        result = gateway.prompt_speech("owned-session", case, output)
+        gateway.settle_for_restore.assert_called_once()
+        self.assertIsNone(gateway.pending_submission)
+        self.assertEqual(result["tool_call_id"], "owned-call")
+
     def test_trace_rejects_normal_execution_labeled_as_unsafe(self):
         from tests.provider.issue83_fixtures import validate_native_trace
         case = next(case for case in native_cases() if case["voice"] == "ermil"

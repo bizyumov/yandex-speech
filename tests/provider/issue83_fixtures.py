@@ -236,6 +236,7 @@ class NativeGateway:
                 if terminal.get("status") != "terminal":
                     continue
                 self.pending_submission = None
+                self.settle_for_restore()  # Terminal receipt can precede managed-worker cleanup.
                 return {"submission_id": submission_id, "admission": {key: admitted.get(key)
                         for key in ("admission_id", "status", "submission_id")},
                     "tool_start_timestamp": call_start,
