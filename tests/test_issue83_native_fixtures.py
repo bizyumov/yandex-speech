@@ -212,6 +212,8 @@ class PerCaseSelectionTests(unittest.TestCase):
         from tests.provider.issue83_fixtures import NativeGateway
         gateway = NativeGateway.__new__(NativeGateway)
         gateway.identity = {"pid": 71}
+        gateway.pending_submission = None
+        gateway.websocket = None
         with patch.object(gateway, "control", side_effect=[
                 {"pid": 71, "active_agents": 2}, {"pid": 71, "active_agents": 0}]) as control, \
                 patch("tests.provider.issue83_fixtures.time.sleep") as sleep:
@@ -307,3 +309,70 @@ class PerCaseSelectionTests(unittest.TestCase):
             summary = case_rollbacks(self.evidence, [{"id": "good"}, {"id": name}])
             self.assertFalse(summary["restored"])
             self.assertEqual(len(summary["cases"]), 2)
+
+class NativeConnectionTests(unittest.TestCase):
+    def gateway(self):
+        from tests.provider.issue83_fixtures import NativeGateway
+        gateway = NativeGateway.__new__(NativeGateway)
+        gateway.identity = {"pid": 71}
+        gateway.websocket = None
+        gateway.pending_submission = None
+        gateway.rpc_id = 0
+        gateway.events = []
+        return gateway
+
+    def test_idle_wait_closes_previous_connection_before_polling_unrelated_work(self):
+        gateway = self.gateway()
+        events = []
+        old = SimpleNamespace(close=lambda: events.append("close"))
+        gateway.websocket = old
+        states = iter([{"pid": 71, "active_agents": 1}, {"pid": 71, "active_agents": 0}])
+        def control(method):
+            events.append(method)
+            return next(states)
+        with patch.object(gateway, "control", side_effect=control), \
+                patch("tests.provider.issue83_fixtures.time.sleep"):
+            gateway.wait_idle()
+        self.assertEqual(events, ["close", "active-work", "active-work"])
+        self.assertIsNone(gateway.websocket)
+
+    def test_wait_refuses_unsettled_owned_submission_before_closing_or_polling(self):
+        gateway = self.gateway()
+        gateway.pending_submission = {"admission_id": "owned"}
+        with patch.object(gateway, "close") as close, patch.object(gateway, "control") as control:
+            with self.assertRaisesRegex(ValueError, "owned"):
+                gateway.wait_idle(timeout=0)
+        close.assert_not_called()
+        control.assert_not_called()
+
+    def test_rpc_opens_fresh_connection_once_without_replaying_a_failed_send(self):
+        gateway = self.gateway()
+        sent = []
+        websocket = SimpleNamespace(send=lambda message: sent.append(json.loads(message)),
+            recv=lambda timeout: json.dumps({"id": 1, "result": {"admission_id": "once"}}))
+        def connect():
+            gateway.websocket = websocket
+        with patch.object(gateway, "connect", side_effect=connect) as opened:
+            self.assertEqual(gateway.rpc("prompt.submit", {"submission_id": "stable"})["admission_id"], "once")
+            opened.assert_called_once()
+            self.assertEqual(len(sent), 1)
+            with patch.object(websocket, "send", side_effect=ConnectionError("closed after send attempt")):
+                with self.assertRaises(ConnectionError):
+                    gateway.rpc("prompt.submit", {"submission_id": "another"})
+            opened.assert_called_once()
+        self.assertEqual([entry["method"] for entry in sent], ["prompt.submit"])
+
+    def test_close_is_idempotent_and_forgets_even_a_failed_close(self):
+        gateway = self.gateway()
+        websocket = SimpleNamespace(close=lambda: None)
+        gateway.websocket = websocket
+        with patch.object(websocket, "close") as close:
+            gateway.close()
+            gateway.close()
+            close.assert_called_once()
+        self.assertIsNone(gateway.websocket)
+        gateway.websocket = websocket
+        with patch.object(websocket, "close", side_effect=ConnectionError("close failed")):
+            with self.assertRaises(ConnectionError):
+                gateway.close()
+        self.assertIsNone(gateway.websocket)

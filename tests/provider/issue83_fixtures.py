@@ -128,6 +128,9 @@ class NativeGateway:
 
     def wait_idle(self, timeout=900):
         """Wait without interrupting unrelated work or changing profile settings."""
+        if self.pending_submission is not None:
+            raise ValueError("owned admission must settle before waiting for unrelated work")
+        self.close()
         deadline = time.monotonic() + timeout
         while True:
             state = self.control("active-work")
@@ -147,6 +150,8 @@ class NativeGateway:
             open_timeout=10, close_timeout=5, max_size=16 * 1024 * 1024)
 
     def rpc(self, method, params):
+        if self.websocket is None:
+            self.connect()
         self.rpc_id += 1
         identity = self.rpc_id
         self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": identity, "method": method, "params": params}))
@@ -304,8 +309,9 @@ class NativeGateway:
         return base64.b64decode(value.split(",", 1)[1], validate=True), time.monotonic()-started
 
     def close(self):
-        if self.websocket is not None:
-            self.websocket.close()
+        websocket, self.websocket = self.websocket, None
+        if websocket is not None:
+            websocket.close()
 
 
 
