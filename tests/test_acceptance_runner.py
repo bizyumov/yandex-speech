@@ -136,6 +136,46 @@ class AcceptanceRunnerTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_args(["--increment", "issue83", "--live-only"])
 
+    def test_native_collection_stops_after_failure_while_offline_collects_all_results(self):
+        import contextlib
+        import io
+        import os
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from tests import __main__ as runner
+        for host in (True, False):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as directory:
+                events = []
+                class SyntheticCases(unittest.TestCase):
+                    def test_first(self):
+                        events.append("first")
+                        self.fail("synthetic native failure; later profile work must not start")
+                    def test_later(self):
+                        events.append("later")
+                first, later = SyntheticCases("test_first"), SyntheticCases("test_later")
+                cases = {first.id(): first, later.id(): later}
+                evidence = Path(directory) / "synthetic-runner.json"
+                manifest = {"scope": "synthetic-control-fixture", "acceptance": {
+                    "synthetic": {"offline": [], "provider": [], "host": ["synthetic-cases"]}}}
+                arguments = ["--increment", "issue83", "--evidence", str(evidence)]
+                if host:
+                    arguments += ["--provider", "--host", "--live-only"]
+                with patch.dict(os.environ), patch.object(runner, "validate_runtime"), \
+                        patch.object(runner, "read_manifest", return_value=manifest), \
+                        patch.object(runner, "selected_tests", return_value=cases), \
+                        patch.object(runner, "read_reviews", return_value={}), \
+                        patch.object(runner, "source_digest", return_value="synthetic"), \
+                        patch.object(runner, "_version", return_value="synthetic"), \
+                        patch.object(runner.subprocess, "run", return_value=SimpleNamespace(returncode=0, stdout="")), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(runner.main(arguments), 1)
+                self.assertEqual(events, ["first"] if host else ["first", "later"])
+                record = json.loads(evidence.read_text())
+                self.assertEqual(record["test_count"], 1 if host else 2)
+                self.assertEqual(record["outcomes"][first.id()], "failed")
+                if host:
+                    self.assertNotIn(later.id(), record["outcomes"])
+
     def test_issue83_listening_cannot_omit_or_repeat_a_required_comparison(self):
         from tests.__main__ import read_reviews
         with tempfile.TemporaryDirectory() as directory:

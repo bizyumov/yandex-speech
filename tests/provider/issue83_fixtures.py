@@ -126,19 +126,19 @@ class NativeGateway:
             raise ValueError("native profile has active work or a changed process; test selection was not changed")
         return state
 
-    def wait_idle(self, timeout=900):
-        """Wait without interrupting unrelated work or changing profile settings."""
+    def wait_idle(self, timeout=None):
+        """Yield to normal work; an explicit caller deadline may bound the wait."""
         if self.pending_submission is not None:
             raise ValueError("owned admission must settle before waiting for unrelated work")
         self.close()
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             state = self.control("active-work")
             if state["pid"] != self.identity["pid"]:
                 raise ValueError("native gateway process changed while waiting for idle")
             if state["active_agents"] == 0:
                 return state
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("native gateway did not become idle; test settings were not installed")
             time.sleep(1)
 
@@ -187,6 +187,7 @@ class NativeGateway:
 
     def prompt_speech(self, session_id, case, output, *, timeout=180, expect_rejection=False):
         from tools.tts_text_normalize import prepare_spoken_text
+        self.rpc("session.resume", {"session_id": session_id, "omit_messages": True})
         before = self.messages(session_id)
         start = max((row["id"] for row in before), default=0)
         submission_id = "issue83-" + case["id"] + "-" + uuid.uuid4().hex

@@ -477,7 +477,8 @@ def main(argv=None):
         return 1
     started = time.monotonic()
     try:
-        result = unittest.TextTestRunner(verbosity=1, buffer=True, resultclass=EvidenceResult).run(
+        result = unittest.TextTestRunner(verbosity=1, buffer=True, resultclass=EvidenceResult,
+            failfast=args.host).run(
             unittest.TestSuite(cases.values()))
         outcomes, reused_ids = dict(result.outcomes), set()
         if reused:

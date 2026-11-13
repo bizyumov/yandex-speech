@@ -158,11 +158,14 @@ class NativeSelectionTests(unittest.TestCase):
         gateway = object.__new__(NativeGateway)
         observations = iter([[], rows])
         gateway.messages = lambda session_id, after=0: next(observations)
-        gateway.rpc = lambda method, params: ({"admission_id": "owned-admission"}
-            if method == "prompt.submit" else {"status": "terminal"})
+        gateway.rpc = unittest.mock.Mock(side_effect=lambda method, params: ({"admission_id": "owned-admission"}
+            if method == "prompt.submit" else {"status": "terminal"}))
         gateway.settle_for_restore = unittest.mock.Mock()
         result = gateway.prompt_speech("owned-session", case, output)
         gateway.settle_for_restore.assert_called_once()
+        self.assertEqual(gateway.rpc.call_args_list[0], unittest.mock.call("session.resume",
+            {"session_id": "owned-session", "omit_messages": True}))
+        self.assertEqual(gateway.rpc.call_args_list[1].args[0], "prompt.submit")
         self.assertIsNone(gateway.pending_submission)
         self.assertEqual(result["tool_call_id"], "owned-call")
 
@@ -336,6 +339,14 @@ class NativeConnectionTests(unittest.TestCase):
         self.assertEqual(events, ["close", "active-work", "active-work"])
         self.assertIsNone(gateway.websocket)
 
+    def test_default_idle_wait_allows_normal_work_to_finish_without_a_reserved_window(self):
+        gateway = self.gateway()
+        with patch.object(gateway, "control", side_effect=[
+                {"pid": 71, "active_agents": 1}, {"pid": 71, "active_agents": 0}]), \
+                patch("tests.provider.issue83_fixtures.time.monotonic", side_effect=[0, 901]), \
+                patch("tests.provider.issue83_fixtures.time.sleep"):
+            self.assertEqual(gateway.wait_idle()["active_agents"], 0)
+
     def test_wait_refuses_unsettled_owned_submission_before_closing_or_polling(self):
         gateway = self.gateway()
         gateway.pending_submission = {"admission_id": "owned"}
@@ -344,6 +355,17 @@ class NativeConnectionTests(unittest.TestCase):
                 gateway.wait_idle(timeout=0)
         close.assert_not_called()
         control.assert_not_called()
+
+    def test_resume_refusal_never_creates_an_uncertain_prompt(self):
+        gateway = self.gateway()
+        gateway.messages = unittest.mock.Mock(return_value=[])
+        gateway.rpc = unittest.mock.Mock(side_effect=ValueError("session attachment refused"))
+        with self.assertRaisesRegex(ValueError, "attachment"):
+            gateway.prompt_speech("owned-session", native_cases()[0], Path("/synthetic/native.ogg"))
+        gateway.rpc.assert_called_once_with("session.resume",
+            {"session_id": "owned-session", "omit_messages": True})
+        gateway.messages.assert_not_called()
+        self.assertIsNone(gateway.pending_submission)
 
     def test_rpc_opens_fresh_connection_once_without_replaying_a_failed_send(self):
         gateway = self.gateway()
