@@ -81,6 +81,15 @@ class NativeSelectionTests(unittest.TestCase):
         self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
         self.assertFalse(json.loads((self.evidence / "rollback-result.json").read_text())["restored"])
 
+    def test_unrelated_activity_does_not_block_exact_owned_hot_restoration(self):
+        with SpeechSelection(self.gateway, self.evidence) as selection:
+            selection.select(native_cases()[0])
+            self.gateway.settle_for_restore = lambda: {"active_agents": 1}
+            self.gateway.idle = lambda: (_ for _ in ()).throw(AssertionError("unrelated chat must not block rollback"))
+        self.assertEqual(yaml_config := YAML(typ="safe").load(self.config.read_text()), self.original)
+        self.assertEqual(self.preferences.read_bytes(), self.before)
+        self.assertTrue(json.loads((self.evidence / "rollback-result.json").read_text())["restored"])
+
     def test_unknown_command_shadow_is_refused_before_any_native_write(self):
         original = YAML(typ="safe").load(self.config.read_text())
         original["tts"]["providers"]["yandex"]["command"] = "opaque-program secret"
@@ -92,13 +101,13 @@ class NativeSelectionTests(unittest.TestCase):
         native.assert_not_called()
         self.assertEqual(YAML(typ="safe").load(self.config.read_text()), original)
 
-    def test_active_work_blocks_every_rollback_write_and_retains_recovery(self):
+    def test_unsettled_owned_work_blocks_every_rollback_write_and_retains_recovery(self):
         selection = SpeechSelection(self.gateway, self.evidence)
         selection.__enter__()
         selection.select(native_cases()[0])
         selected_preferences = self.preferences.read_bytes()
         selected_native = self.config.read_bytes()
-        self.gateway.settle_for_restore = lambda: (_ for _ in ()).throw(ValueError("active unrelated work"))
+        self.gateway.settle_for_restore = lambda: (_ for _ in ()).throw(ValueError("owned admission uncertain"))
         with self.assertRaisesRegex(ValueError, "settings retained"):
             selection.__exit__(None, None, None)
         self.assertEqual(self.preferences.read_bytes(), selected_preferences)
@@ -126,8 +135,9 @@ class NativeSelectionTests(unittest.TestCase):
         self.assertFalse(any(method == "session.interrupt" for method, params in calls))
         self.assertIsNone(gateway.pending_submission)
         gateway.control = lambda verb: {"pid": 123, "active_agents": 1}
-        with self.assertRaisesRegex(ValueError, "active work"):
-            gateway.settle_for_restore(timeout=.01)
+        state = gateway.settle_for_restore(timeout=.01)
+        self.assertEqual(state["active_agents"], 1)
+        self.assertFalse(any(method == "session.interrupt" for method, params in calls))
 
     def test_prompt_waits_for_terminal_worker_cleanup_before_return(self):
         from tests.provider.issue83_fixtures import NativeGateway

@@ -273,15 +273,10 @@ class NativeGateway:
                 if time.monotonic() >= deadline:
                     raise ValueError("owned native admission did not settle")
                 time.sleep(.1)
-        while True:
-            state = self.control("active-work")
-            if state["pid"] != self.identity["pid"]:
-                raise ValueError("gateway changed; recovery must verify its new instance")
-            if state["active_agents"] == 0:
-                return state
-            if time.monotonic() >= deadline:
-                raise ValueError("active work remains; configuration rollback was not attempted")
-            time.sleep(.1)
+        state = self.control("active-work")
+        if state["pid"] != self.identity["pid"]:
+            raise ValueError("gateway changed; recovery must verify its new instance")
+        return state  # Unrelated work is preserved; only owned production gates hot restoration.
 
 
     def download(self, path, session_id):
@@ -453,7 +448,6 @@ class SpeechSelection:
             raise ValueError("native work not settled; settings retained with rollback.json for recovery") from error
         if self.written is not None:
             try:
-                self.gateway.idle()
                 current = self.path.read_bytes() if self.path.exists() else None
                 if current != self.original:
                     if current != self.written:
@@ -467,13 +461,11 @@ class SpeechSelection:
                 failures.append(type(failure).__name__ + ": preference rollback")
         if self.outer_changed:
             try:
-                self.gateway.idle()
                 self._outer_limit(self.original_outer)
             except Exception as failure:
                 failures.append(type(failure).__name__ + ": outer-limit rollback")
         if self.shadow_removed:
             try:
-                self.gateway.idle()
                 current = self._config()
                 assert_unshared_native_paths(current)
                 actual = current.get("tts", {}).get("providers", {}).get("yandex")
