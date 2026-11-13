@@ -1,5 +1,6 @@
 """Owner-scoped stock-gateway clients and reversible native TTS test selection."""
 import base64
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -124,6 +125,19 @@ class NativeGateway:
         if state["pid"] != self.identity["pid"] or state["active_agents"] != 0:
             raise ValueError("native profile has active work or a changed process; test selection was not changed")
         return state
+
+    def wait_idle(self, timeout=900):
+        """Wait without interrupting unrelated work or changing profile settings."""
+        deadline = time.monotonic() + timeout
+        while True:
+            state = self.control("active-work")
+            if state["pid"] != self.identity["pid"]:
+                raise ValueError("native gateway process changed while waiting for idle")
+            if state["active_agents"] == 0:
+                return state
+            if time.monotonic() >= deadline:
+                raise TimeoutError("native gateway did not become idle; test settings were not installed")
+            time.sleep(1)
 
     def connect(self):
         from websockets.sync.client import connect
@@ -318,6 +332,34 @@ def assert_unshared_native_paths(document):
             if key not in node:
                 break
             node = node[key]
+
+
+@contextmanager
+def native_case_selection(gateway, directory, baseline):
+    """Keep each temporary selection inside one owned admission and delivery."""
+    gateway.wait_idle()
+    with SpeechSelection(gateway, directory) as selection:
+        settings = {"native_tts": copy.deepcopy(selection.native_before.get("tts", {})),
+                    "skill_preferences": copy.deepcopy(selection.before)}
+        if baseline and settings != baseline:
+            raise ValueError("inherited comparison settings changed between cases; operator changes preserved")
+        if not baseline:
+            baseline.update(settings)
+        yield selection
+
+
+def case_rollbacks(root, rows):
+    records = []
+    for row in rows:
+        path = Path(root) / row["id"] / "rollback-result.json"
+        try:
+            result = json.loads(path.read_text())
+            restored = isinstance(result, dict) and result.get("restored") is True
+        except (OSError, ValueError):
+            restored = False
+        records.append({"id": row["id"], "receipt": str(path.relative_to(root)), "restored": restored})
+    return {"restored": bool(records) and all(record["restored"] for record in records),
+            "cases": records}
 
 class SpeechSelection:
     """Only test-owned user choices and one explicitly recognized command shadow.

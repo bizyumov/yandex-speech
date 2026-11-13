@@ -13,6 +13,7 @@ import uuid
 from tests.__main__ import source_digest
 from tests.issue83_cases import alena_cases, automatic_cases, native_cases, rejection_cases, rollover_cases
 from tests.provider.issue83_fixtures import (NativeGateway, SpeechSelection, digest,
+    native_case_selection, case_rollbacks,
     native_log_cursor, native_log_lines, native_traces, validate_native_trace)
 
 
@@ -58,18 +59,19 @@ class LiveNativeTests(unittest.TestCase):
             temporary.write_text(json.dumps(receipt, ensure_ascii=False, indent=2))
             os.replace(temporary, path)
         group, session_id = None, None
+        baseline = {}
         try:
-            with SpeechSelection(gateway, root) as selection:
-                for case in cases:
-                    directory = root / case["id"]
-                    directory.mkdir()
-                    row = {"id": case["id"], "status": "started", "voice": case["voice"],
-                        "model": case["model"], "role": case["role"], "route": asdict(case["route"]),
-                        "whole_normalized_characters": case["length"], "silo": case["silo"],
-                        "input_sha256": hashlib.sha256(case["text"].encode()).hexdigest()}
-                    rows.append(row)
-                    save()
-                    try:
+            for case in cases:
+                directory = root / case["id"]
+                directory.mkdir()
+                row = {"id": case["id"], "status": "started", "voice": case["voice"],
+                    "model": case["model"], "role": case["role"], "route": asdict(case["route"]),
+                    "whole_normalized_characters": case["length"], "silo": case["silo"],
+                    "input_sha256": hashlib.sha256(case["text"].encode()).hexdigest()}
+                rows.append(row)
+                save()
+                try:
+                    with native_case_selection(gateway, directory, baseline) as selection:
                         selection.select(case)
                         current_group = (case["voice"], case["length"], case.get("outer_max", 4000))
                         if group != current_group:
@@ -124,21 +126,21 @@ class LiveNativeTests(unittest.TestCase):
                             file_ready_basis="completed native tool result after host output combination",
                             listener_verdict="pending", tail_verdict="pending-listener")
                         self.assertEqual(gateway.control("identify")["instance_id"], gateway.identity["instance_id"])
-                    except BaseException as error:
-                        row.update(status="failed", error_type=type(error).__name__, error=str(error)[:500])
-                        save()
-                        raise
+                except BaseException as error:
+                    row.update(status="failed", error_type=type(error).__name__, error=str(error)[:500])
                     save()
-                    print(json.dumps({"case": case["id"], "characters": case["length"],
-                        "status": row["status"], "outer_chunks": row["outer_chunks"],
-                        "rpc_calls": row["rpc_calls"]}), flush=True)
+                    raise
+                save()
+                print(json.dumps({"case": case["id"], "characters": case["length"],
+                    "status": row["status"], "outer_chunks": row["outer_chunks"],
+                    "rpc_calls": row["rpc_calls"]}), flush=True)
             receipt["all_generation_delivery_cases_passed"] = all(row["status"] == "passed-native-generation-delivery" for row in rows)
             self.assertEqual({row["id"] for row in rows}, {case["id"] for case in cases})
         finally:
             gateway.close()
             receipt["sources_unchanged"] = source_digest() == source
             receipt["credentials_unchanged"] = digest(workspace / ".env") == env_before
-            receipt["rollback"] = json.loads((root / "rollback-result.json").read_text()) if (root / "rollback-result.json").exists() else {"restored": False}
+            receipt["rollback"] = case_rollbacks(root, rows)
             save()
             print(json.dumps({"scope": scope, "receipt": str(path),
                               "passed_cases": sum(row["status"] == "passed-native-generation-delivery" for row in rows),

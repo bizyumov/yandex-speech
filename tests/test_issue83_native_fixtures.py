@@ -203,3 +203,107 @@ class NativeSelectionTests(unittest.TestCase):
                     self.fail("crossing alias must not enter")
         native.assert_not_called()
         self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
+
+class PerCaseSelectionTests(unittest.TestCase):
+    def setUp(self):
+        NativeSelectionTests.setUp(self)
+
+    def test_busy_gateway_wait_is_read_only_and_checks_process_identity(self):
+        from tests.provider.issue83_fixtures import NativeGateway
+        gateway = NativeGateway.__new__(NativeGateway)
+        gateway.identity = {"pid": 71}
+        with patch.object(gateway, "control", side_effect=[
+                {"pid": 71, "active_agents": 2}, {"pid": 71, "active_agents": 0}]) as control, \
+                patch("tests.provider.issue83_fixtures.time.sleep") as sleep:
+            self.assertEqual(gateway.wait_idle(timeout=5)["active_agents"], 0)
+        self.assertEqual(control.call_args_list, [unittest.mock.call("active-work")] * 2)
+        sleep.assert_called_once()
+        with patch.object(gateway, "control", return_value={"pid": 72, "active_agents": 0}):
+            with self.assertRaisesRegex(ValueError, "process"):
+                gateway.wait_idle(timeout=5)
+        with patch.object(gateway, "control", return_value={"pid": 71, "active_agents": 1}), \
+                patch("tests.provider.issue83_fixtures.time.monotonic", side_effect=[0, 6]):
+            with self.assertRaisesRegex(TimeoutError, "idle"):
+                gateway.wait_idle(timeout=5)
+
+    def test_each_case_restores_before_waiting_for_the_next_idle_window(self):
+        from tests.provider.issue83_fixtures import native_case_selection, case_rollbacks
+        baseline, rows, waited = {}, [], []
+        def wait_idle():
+            self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
+            self.assertEqual(self.preferences.read_bytes(), self.before)
+            waited.append(True)
+        self.gateway.wait_idle = wait_idle
+        for case in native_cases()[:2]:
+            directory = self.evidence / case["id"]
+            directory.mkdir()
+            rows.append({"id": case["id"]})
+            with native_case_selection(self.gateway, directory, baseline) as selection:
+                selection.select(case)
+        self.assertEqual(len(waited), 2)
+        summary = case_rollbacks(self.evidence, rows)
+        self.assertTrue(summary["restored"])
+        self.assertEqual(len(summary["cases"]), 2)
+
+    def test_interruption_restores_the_owned_case_without_claiming_completion(self):
+        from tests.provider.issue83_fixtures import native_case_selection, case_rollbacks
+        self.gateway.wait_idle = lambda: None
+        case = native_cases()[0]
+        directory = self.evidence / case["id"]
+        directory.mkdir()
+        with self.assertRaises(KeyboardInterrupt):
+            with native_case_selection(self.gateway, directory, {}) as selection:
+                selection.select(case)
+                raise KeyboardInterrupt()
+        summary = case_rollbacks(self.evidence, [{"id": case["id"], "status": "failed"}])
+        self.assertTrue(summary["restored"])
+        self.assertEqual(self.preferences.read_bytes(), self.before)
+        self.assertNotIn("all_generation_delivery_cases_passed", summary)
+
+    def test_setup_failure_is_included_in_aggregate_rollback(self):
+        from tests.provider.issue83_fixtures import native_case_selection, case_rollbacks
+        self.gateway.wait_idle = lambda: None
+        directory = self.evidence / "setup"
+        directory.mkdir()
+        native = SpeechSelection._native
+        def fail_after_write(selection, *args):
+            native(selection, *args)
+            if args[0] == "unset":
+                raise ValueError("post-write setup failure")
+        with patch.object(SpeechSelection, "_native", new=fail_after_write):
+            with self.assertRaisesRegex(ValueError, "post-write"):
+                with native_case_selection(self.gateway, directory, {}):
+                    self.fail("failed setup must not enter")
+        self.assertTrue(case_rollbacks(self.evidence, [{"id": "setup"}])["restored"])
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
+
+    def test_changed_inherited_comparison_settings_are_preserved_and_stop_the_run(self):
+        from tests.provider.issue83_fixtures import native_case_selection
+        self.gateway.wait_idle = lambda: None
+        baseline = {}
+        first = self.evidence / "first"
+        first.mkdir()
+        with native_case_selection(self.gateway, first, baseline):
+            pass
+        changed = dict(self.original, tts=dict(self.original["tts"], speed=1.2))
+        self.config.write_text(dump_yaml(changed))
+        second = self.evidence / "second"
+        second.mkdir()
+        with self.assertRaisesRegex(ValueError, "comparison settings changed"):
+            with native_case_selection(self.gateway, second, baseline):
+                self.fail("different inherited settings cannot share a matched comparison")
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), changed)
+        self.assertEqual(self.preferences.read_bytes(), self.before)
+
+    def test_missing_failed_or_malformed_rollback_never_counts_as_restored(self):
+        from tests.provider.issue83_fixtures import case_rollbacks
+        self.assertFalse(case_rollbacks(self.evidence, [])["restored"])
+        for name, payload in (("good", {"restored": True}), ("bad", {"restored": False}),
+                              ("malformed", "invalid")):
+            directory = self.evidence / name
+            directory.mkdir()
+            (directory / "rollback-result.json").write_text(json.dumps(payload))
+        for name in ("missing", "bad", "malformed"):
+            summary = case_rollbacks(self.evidence, [{"id": "good"}, {"id": name}])
+            self.assertFalse(summary["restored"])
+            self.assertEqual(len(summary["cases"]), 2)
