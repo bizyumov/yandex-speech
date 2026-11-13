@@ -86,6 +86,21 @@ class StreamFileTests(unittest.TestCase):
             self.collect(Transport(self.ogg, consume=False))
         self.assertEqual(caught.exception.category, "OUTPUT_PARTIAL")
 
+    def test_explicit_no_speakable_text_is_not_an_empty_success(self):
+        class NoSpeech(Transport):
+            def open_stream(self, requests, timeout):
+                self.calls += 1
+                self.requests = list(requests)
+                value = p.StreamSynthesisResponse.DESCRIPTOR.fields_by_name["chunk_type"].enum_type.values_by_name["NO_SPEAKABLE_TEXT"].number
+                return iter([p.StreamSynthesisResponse(chunk_type=value)])
+        transport = NoSpeech()
+        with self.assertRaises(SpeechError) as caught:
+            self.collect(transport)
+        self.assertEqual(caught.exception.category, "OUTPUT_PARTIAL")
+        self.assertIn("no speakable", str(caught.exception))
+        self.assertEqual(transport.calls, 1)
+        self.assertTrue(transport.closed.is_set())
+
     def test_cancellation_closes_blocked_producer(self):
         cancel = threading.Event()
         transport = Transport(self.ogg, block=True, cancel=cancel)

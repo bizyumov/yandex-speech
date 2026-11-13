@@ -433,7 +433,8 @@
             "tests.test_tts_boundaries",
             "tests.test_tts_text",
             "tests.test_tts_ssml",
-            "tests.test_issue83_cases"
+            "tests.test_issue83_cases",
+          "tests.test_tts_selection"
           ],
           "provider": [],
           "host": [
@@ -513,10 +514,13 @@
             "tests.test_tts_audio",
             "tests.test_tts_capabilities",
             "tests.test_tts_dispatch",
-            "tests.test_hermes"
+            "tests.test_hermes",
+          "tests.test_tts_selection",
+          "tests.test_tts_routing"
           ],
           "provider": [
-            "tests.provider.test_issue83_stream_contracts.LiveStreamContractTests.test_selected_model_role_and_output_framing"
+            "tests.provider.test_issue83_stream_contracts.LiveStreamContractTests.test_selected_model_role_and_output_framing",
+          "tests.provider.test_synthesis.LiveSynthesisTests.test_published_style_ssml_cli_and_complete_multipart"
           ],
           "host": [
             "tests.provider.test_issue83_native.LiveNativeTests.test_native_matrix"

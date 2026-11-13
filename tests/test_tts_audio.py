@@ -60,7 +60,7 @@ def encoded_tone(frequency, duration=.3):
 
 
 def decoded_pcm(data):
-    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0",
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", "pipe:0",
         "-ar", "48000", "-ac", "1", "-f", "s16le", "pipe:1"],
         input=data, capture_output=True, check=True, timeout=15).stdout
     return struct.unpack("<" + "h" * (len(raw) // 2), raw)
@@ -104,6 +104,32 @@ class EncodedAssemblyTests(unittest.TestCase):
         first, tail = pcm[2400:7200], pcm[-7200:-2400]
         self.assertGreater(tone_strength(first, 440), 10 * tone_strength(first, 880))
         self.assertGreater(tone_strength(tail, 880), 10 * tone_strength(tail, 440))
+
+    def test_multipart_mp3_keeps_order_tail_and_complete_decoded_duration(self):
+        from yandex_speech.tts_audio import join_audio
+        parts = [subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"], input=part,
+            capture_output=True, check=True, timeout=15).stdout for part in self.parts]
+        pcm = decoded_pcm(join_audio(parts, "mp3", 48000))
+        expected = sum(len(decoded_pcm(part)) for part in parts)
+        self.assertLessEqual(abs(len(pcm) - expected), max(measured_frame_samples(part) for part in parts))
+        self.assertGreater(tone_strength(pcm[2400:7200], 440), 10 * tone_strength(pcm[2400:7200], 880))
+        self.assertGreater(tone_strength(pcm[-7200:-2400], 880), 10 * tone_strength(pcm[-7200:-2400], 440))
+
+    def test_wav_and_lpcm_assemble_actual_samples_without_external_tools(self):
+        import io
+        from unittest.mock import patch
+        from yandex_speech.tts_audio import join_audio, wrap_pcm
+        parts = [struct.pack("<hhhh", 100, -100, 200, -200),
+                 struct.pack("<hhhh", 300, -300, 400, -400)]
+        with patch("shutil.which", return_value=None), patch("subprocess.run",
+                side_effect=AssertionError("external tool used for PCM assembly")):
+            raw = join_audio(parts, "lpcm", 16000)
+            wav = join_audio([wrap_pcm(part, 16000) for part in parts], "wav", 16000)
+            self.assertEqual(raw, b"".join(parts))
+            with wave.open(io.BytesIO(wav), "rb") as audio:
+                self.assertEqual((audio.getnchannels(), audio.getsampwidth(), audio.getframerate()), (1, 2, 16000))
+                self.assertEqual(audio.readframes(audio.getnframes()), raw)
 
 class ProviderFramingTests(unittest.TestCase):
     def test_ogg_framing_requires_ordered_single_container_and_tail(self):

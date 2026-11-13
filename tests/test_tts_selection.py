@@ -50,6 +50,8 @@ class SelectionTests(unittest.TestCase):
     def test_partial_runtime_interfaces_select_independently(self):
         cases = [
             (RuntimeCapabilities(READY, MISSING, MISSING, MISSING), {}, "rest-v3-utterance"),
+            (RuntimeCapabilities(READY, MISSING, MISSING, MISSING), {"file_method": "utterance"}, "rest-v3-utterance"),
+            (RuntimeCapabilities(READY, MISSING, MISSING, MISSING), {"unsafe_mode": True}, "rest-v3-utterance"),
             (RuntimeCapabilities(READY, READY, READY, MISSING), {"transport": "grpc"}, "grpc-v3-utterance"),
             (RuntimeCapabilities(READY, READY, MISSING, READY), {}, "grpc-v3-stream"),
             (RuntimeCapabilities(READY, READY, MISSING, READY), {"file_method": "utterance"}, "rest-v3-utterance"),
