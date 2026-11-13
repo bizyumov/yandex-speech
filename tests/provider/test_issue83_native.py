@@ -162,25 +162,27 @@ class LiveNativeTests(unittest.TestCase):
 
     def test_native_rejections(self):
         workspace, root, gateway, receipt = self.prepare_run("issue83-native-rejections")
-        observations = receipt["cases"]
+        observations, attempts, baseline = receipt["cases"], [], {}
+        session_id = None
+        control = next(case for case in native_cases() if case["voice"] == "ermil"
+            and case["length"] == 200 and case["route"].name == "grpc-v3-stream")
         try:
-            with SpeechSelection(gateway, root) as selection:
-                control = next(case for case in native_cases() if case["voice"] == "ermil"
-                    and case["length"] == 200 and case["route"].name == "grpc-v3-stream")
-                selection.select(control)
-                session_id = gateway.create_session("TTS rejection " + uuid.uuid4().hex[:8])
-                control_directory = root / "positive-control"
-                control_directory.mkdir()
-                positive = gateway.prompt_speech(session_id, control, control_directory / "native.ogg")
-                self.assertTrue(positive["result"]["success"])
-                receipt["positive_control"] = positive
-                for case in rejection_cases():
+            for index, case in enumerate([control] + rejection_cases()):
+                label = "positive-control" if index == 0 else case["id"]
+                directory = root / label
+                directory.mkdir()
+                attempts.append({"id": label})
+                with native_case_selection(gateway, directory, baseline) as selection:
                     selection.select(case)
-                    directory = root / case["id"]
-                    directory.mkdir()
+                    if session_id is None:
+                        session_id = gateway.create_session("TTS rejection " + uuid.uuid4().hex[:8])
                     cursor = native_log_cursor(workspace)
                     proof = gateway.prompt_speech(session_id, case, directory / "native.ogg",
-                                                  expect_rejection=True)
+                                                  expect_rejection=index != 0)
+                    if index == 0:
+                        self.assertTrue(proof["result"]["success"])
+                        receipt["positive_control"] = proof
+                        continue
                     lines = native_log_lines(cursor)
                     self.assertFalse(any("Yandex native TTS receipt " in line for line in lines))
                     marker = "Yandex native TTS preflight "
@@ -197,7 +199,7 @@ class LiveNativeTests(unittest.TestCase):
             gateway.close()
             receipt["sources_unchanged"] = source_digest() == receipt["source_digest"]
             receipt["credentials_unchanged"] = digest(workspace / ".env") == receipt["credential_before_sha256"]
-            receipt["rollback"] = json.loads((root / "rollback-result.json").read_text()) if (root / "rollback-result.json").exists() else {"restored": False}
+            receipt["rollback"] = case_rollbacks(root, attempts)
             (root / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2))
         self.assertEqual({row["id"] for row in observations}, {case["id"] for case in rejection_cases()})
         self.assertTrue(receipt["sources_unchanged"])
