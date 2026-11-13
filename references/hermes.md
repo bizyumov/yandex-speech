@@ -40,6 +40,18 @@ The tool returns generated audio and a `media_tag`. The assistant must emit the 
 
 Native synthesis preserves existing nonempty files and symlinks, returns an artifact with its actual container extension and can publish a new sibling for an empty host allocation. File synthesis remains available through eligible REST routes without gRPC. Optional v3 PCM output requires compatible voice/settings and gRPC; PCM availability alone does not create a player.
 
+## Complete files and host chunking
+
+`speech.tts.file_method` selects the complete-file producer: `utterance` or `stream` for explicit operation. Streamed-file synthesis uses gRPC v3 internally and still returns a completed audio file to the normal Hermes tool. Progressive PCM uses the separate existing stream interface; a completed file is not speech in a connected voice channel.
+
+For the native Yandex binding, stock Hermes 0.23.0's outer cap is 4,000 characters when no provider override applies. The skill then applies its own API/body budgets to each callback. A 5,500-character logical reply can therefore become two host callbacks even when each callback uses one streaming RPC. Report both counts; splitting does not move the complete reply into another length band.
+
+Hermes supports a provider-specific `tts.yandex.max_text_length` override. A reviewed value of 10,000 permits the skill's own 5,000-character streaming admission/rollover to operate within a callback. This changes host partitioning, not SpeechKit's documented limits or the skill's per-RPC policy. Inspect the current setting and preserve the profile owner's choice; use the stock config CLI for an authorized change.
+
+A same-name command entry can contain explicit `--api-version`, `--transport`, voice and role options. Those call options outrank the skill user file. An API-v1/REST command pin cannot be turned into gRPC streaming by editing a lower-priority JSON setting. When selecting the native binding, preserve the intended API/transport/voice/model/role as reviewed native defaults or user preferences, then remove only the reconciled command entry. Native defaults remain below the selected user file.
+
+Successful native callbacks emit an allowlisted `Yandex native TTS receipt` in the owning profile logs: actual API/transport/method, voice/model/role, unsafe mode, submitted attempts, completed output parts, file readiness and exposed stream timings. It contains no speech text or credentials. Core readiness is local evidence; normal tool execution, addressed delivery and hearing remain distinct checks.
+
 ## Which voice settings apply?
 
 Ctrl+B (the default voice.record_key) toggles recording in the focused interactive Hermes CLI/TUI when local voice mode is enabled. It uses the microphone on the machine running that CLI. A gateway service has no interactive terminal for this shortcut.
