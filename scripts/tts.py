@@ -68,8 +68,9 @@ class TextToSpeech:
                                     _explicit={"tts":values}, _environment=self.environment)
         from yandex_speech.tts_voices import resolve_voice, select_version
         options = resolve_voice(settings.value("tts"), settings.sources)
+        options["_sample_rate_requested"] = settings.sources.get("tts.sample_rate_hertz", "builtin") != "builtin"
         version=select_version(options)
-        if sample_rate is not None and options["default_format"]!="lpcm" and not(version=="1" and options["default_format"]=="wav"):
+        if (sample_rate is not None or options["default_format"] == "wav" and options["_sample_rate_requested"]) and options["default_format"]!="lpcm" and not(version=="1" and options["default_format"]=="wav"):
             raise SpeechError("CONFIG","sample-rate applies to LPCM output, not this container method")
         return settings, options, version
 
@@ -198,7 +199,7 @@ class TextToSpeech:
         fmt = plan.format
         original = plan.request.as_options()
         execution = dict(original, api_version=plan.api_version, transport=plan.transport)
-        pending, completed, receipts = deque(plan.parts), [], []
+        pending, completed, receipts, part_lengths, request_attempts = deque(plan.parts), [], [], [], []
         splits, completed_bytes, over_budget = 0, 0, None
         partial = output.parent / (".yandex-speech-partial-" + uuid.uuid4().hex)
         self.last_synthesis = {}
@@ -208,6 +209,9 @@ class TextToSpeech:
                 if remaining <= 0:
                     raise SpeechError("TIMEOUT", "whole synthesis operation deadline expired")
                 piece = pending.popleft()
+                attempt = {"characters": len(piece), "transport": plan.transport, "method": plan.method,
+                           "outcome": "pending"}
+                request_attempts.append(attempt)
                 try:
                     if plan.method == "stream":
                         result = collect_stream_file(piece, execution, api_key=self.api_key,
@@ -220,7 +224,9 @@ class TextToSpeech:
                         data = self._synthesize_request(piece, settings, execution, plan.api_version,
                             deadline_seconds=remaining)
                 except SpeechError as error:
-                    if (not completed and error.code == "GRPC_UNREACHABLE"
+                    attempt["outcome"] = ("not-submitted" if error.code == "GRPC_UNREACHABLE" else
+                        "rejected-duration" if error.category == "LIMIT" and error.code == "UTTERANCE_LIMIT" else "failed-unknown")
+                    if (not completed and splits == 0 and error.code == "GRPC_UNREACHABLE"
                             and original["transport"] == "auto"):
                         plan = prepare(excluded=("grpc-v3-stream", "grpc-v3-utterance"))
                         execution = dict(plan.request.as_options(),
@@ -240,12 +246,15 @@ class TextToSpeech:
                         splits += 1
                         continue
                     raise
+                attempt["outcome"] = "audio-returned"
                 data = finalize_audio(data, fmt)
                 if completed_bytes + len(data) > MAX_SYNTHESIS_BYTES:
                     over_budget = data
                     raise SpeechError("LIMIT", "complete synthesis exceeded its 256 MiB output budget; accepted parts retained")
                 completed_bytes += len(data)
                 completed.append(data)
+                part_lengths.append(len(piece))
+                attempt["outcome"] = "complete"
             if time.monotonic() >= deadline:
                 raise SpeechError("TIMEOUT", "whole synthesis operation deadline expired")
             data = join_audio(completed, fmt, execution["sample_rate_hertz"],
@@ -262,11 +271,17 @@ class TextToSpeech:
                 parts=len(completed), planned_parts=len(plan.parts), input_characters=len(text),
                 output=str(output), assembly="single" if len(completed) == 1 else "complete-container",
                 route_reason=plan.reason, exclusions=[asdict(item) for item in plan.exclusions],
-                stream_receipts=receipts, duration_splits=splits, output_budget_bytes=MAX_SYNTHESIS_BYTES)
+                stream_receipts=receipts, duration_splits=splits, output_budget_bytes=MAX_SYNTHESIS_BYTES,
+                output_part_lengths=part_lengths,
+                submitted_part_lengths=[item["characters"] for item in request_attempts
+                    if item["outcome"] in {"complete", "rejected-duration"}],
+                request_attempts=request_attempts, rpc_calls=len(completed)+splits,
+                unsafe_mode=bool(execution.get("unsafe_mode")))
             return [output]
         except BaseException as error:
             self.last_synthesis.update(status="incomplete", parts=len(completed), output=None,
-                method=plan.method, api_version=plan.api_version, transport=plan.transport)
+                method=plan.method, api_version=plan.api_version, transport=plan.transport,
+                request_attempts=request_attempts, output_part_lengths=part_lengths, duration_splits=splits)
             directory = getattr(error, "partial_dir", None)
             if completed or over_budget is not None or directory is not None:
                 directory = Path(directory or partial)

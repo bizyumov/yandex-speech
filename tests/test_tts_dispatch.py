@@ -52,6 +52,9 @@ class FileDispatchTests(unittest.TestCase):
                     self.assertEqual(self.client.last_synthesis["api_version"], version)
                     self.assertEqual(self.client.last_synthesis["transport"], transport)
                     self.assertEqual(self.client.last_synthesis["input_characters"], length)
+                    self.assertEqual(sum(self.client.last_synthesis["submitted_part_lengths"]), length)
+                    self.assertEqual(self.client.last_synthesis["rpc_calls"], len(calls))
+                    self.assertIs(self.client.last_synthesis["unsafe_mode"], unsafe)
                     if method == "stream":
                         self.assertEqual(len(calls), (length + 4999) // 5000)
                         self.assertTrue(all(len(call[0]) <= 5000 for call in calls))
@@ -139,3 +142,69 @@ class FileDispatchTests(unittest.TestCase):
                 main()
         self.assertEqual(cli_error.exception.code, 2)
         client.assert_not_called()
+
+    def test_duration_rejection_does_not_reopen_cross_transport_fallback(self):
+        duration = SpeechError("LIMIT", "synthetic duration rejection", code="UTTERANCE_LIMIT")
+        connection = SpeechError("TRANSPORT", "synthetic later connection", code="GRPC_UNREACHABLE")
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch.object(
+                self.client, "_synthesize_request", side_effect=[duration, connection]) as provider:
+            with self.assertRaises(SpeechError) as caught:
+                self.client.synthesize("a" * 200, self.root / "no-replay.pcm",
+                    file_method="utterance", api_version="3", fmt="lpcm")
+        self.assertEqual(provider.call_count, 2)
+        self.assertEqual(caught.exception.code, "GRPC_UNREACHABLE")
+        self.assertTrue(all(call.args[2]["transport"] == "grpc" for call in provider.call_args_list))
+
+    def test_public_file_path_accepts_hypothetical_v1_only_general(self):
+        from types import SimpleNamespace
+        from yandex_speech.tts_voices import CATALOG
+        hypothetical = dict(CATALOG["ermil"], versions=frozenset({"1"}))
+        with patch.dict(CATALOG, {"hypothetical-v1-only": hypothetical}), patch(
+                "scripts.tts.requests.post",
+                return_value=SimpleNamespace(status_code=200, headers={"Content-Type": "audio/L16"}, content=b"\0\0")) as post:
+            self.client.synthesize("Тест.", self.root / "v1-only.pcm",
+                voice="hypothetical-v1-only", model="general", file_method="utterance", fmt="lpcm")
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(self.client.last_synthesis["api_version"], "1")
+
+    def test_explicit_wav_rate_excludes_incapable_v3_candidates(self):
+        from yandex_speech.tts_audio import wrap_pcm
+        from types import SimpleNamespace
+        data = b"\0\0" * 160
+        with patch("scripts.tts.requests.post",
+                return_value=SimpleNamespace(status_code=200, headers={"Content-Type": "audio/L16"}, content=data)) as post:
+            self.client.synthesize("Тест.", self.root / "rate.wav",
+                file_method="utterance", voice="ermil", model="general", fmt="wav", sample_rate=16000)
+        self.assertEqual(self.client.last_synthesis["api_version"], "1")
+        self.assertEqual(post.call_args.kwargs["data"]["sampleRateHertz"], "16000")
+        with patch("scripts.tts.requests.post") as post:
+            with self.assertRaises(SpeechError):
+                self.client.synthesize("Тест.", self.root / "blocked.wav",
+                    file_method="utterance", voice="sergey", fmt="wav", sample_rate=16000)
+        post.assert_not_called()
+
+    def test_selected_configuration_wav_rate_is_preserved(self):
+        import json
+        from types import SimpleNamespace
+        path = self.root / ".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"speech": {"tts": {"default_format": "wav",
+            "sample_rate_hertz": 16000, "model": "general", "file_method": "utterance"}}}))
+        with patch("scripts.tts.requests.post", return_value=SimpleNamespace(
+                status_code=200, headers={"Content-Type": "audio/L16"}, content=b"\0\0" * 160)) as post:
+            self.client.synthesize("Тест.", self.root / "configured.wav")
+        self.assertEqual(self.client.last_synthesis["api_version"], "1")
+        self.assertEqual(post.call_args.kwargs["data"]["sampleRateHertz"], "16000")
+
+    def test_duration_rejection_keeps_all_submitted_attempts_separate_from_output(self):
+        rejected = SpeechError("LIMIT", "synthetic duration", code="UTTERANCE_LIMIT")
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME), patch.object(
+                self.client, "_synthesize_request", side_effect=[rejected, b"\0\0" * 100, b"\0\0" * 100]):
+            self.client.synthesize("a" * 200, self.root / "split.pcm",
+                file_method="utterance", api_version="3", transport="grpc", fmt="lpcm")
+        self.assertEqual(self.client.last_synthesis["submitted_part_lengths"], [200, 100, 100])
+        self.assertEqual(self.client.last_synthesis["output_part_lengths"], [100, 100])
+        self.assertEqual(self.client.last_synthesis["rpc_calls"], 3)
+        self.assertEqual(self.client.last_synthesis["input_characters"], 200)
+        self.assertEqual([row["outcome"] for row in self.client.last_synthesis["request_attempts"]],
+                         ["rejected-duration", "complete", "complete"])

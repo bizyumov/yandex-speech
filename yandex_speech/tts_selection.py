@@ -143,6 +143,8 @@ def _incompatibility(options, version, transport, method):
             or options.get("volume", -19) != -19 or options.get("pitch_shift", 0) != 0
             or options.get("duration_ms", 0) > 0):
         return "selected model/control requires API v3"
+    if version == "3" and options["default_format"] == "wav" and options.get("_sample_rate_requested"):
+        return "explicit WAV sample rate requires REST v1; v3 container rate is provider-selected"
     if method == "stream" and options.get("duration_ms", 0) > 0:
         return "duration control is unavailable in StreamSynthesis"
     if options["_model"] == "livetts" and (

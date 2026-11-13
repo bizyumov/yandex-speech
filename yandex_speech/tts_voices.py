@@ -97,6 +97,14 @@ def select_version(options):
         if version == "3" or options["transport"] == "grpc" or options["_model"] == "livetts":
             raise SpeechError("CONFIG", "SSML requires a compatible REST v1 voice")
         version = "1"
+    elif (version == "auto" and "1" in options["_voice_info"]["versions"]
+          and (options["_voice_info"]["versions"] == {"1"}
+               or options["default_format"] == "wav" and options.get("_sample_rate_requested"))
+          and options["transport"] != "grpc" and method != "stream"
+          and options.get("model", "auto") in {"auto", "general"}
+          and options.get("volume", -19) == -19 and options.get("pitch_shift", 0) == 0
+          and not options.get("duration_ms", 0) and not options.get("unsafe_mode", False)):
+        version = "1"
     elif version == "auto":
         version = "3" if ("1" not in options["_voice_info"]["versions"]
                           or options["transport"] == "grpc" or method == "stream"

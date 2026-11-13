@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import logging
+import os
 import time
 import shutil
 import stat
@@ -94,7 +95,14 @@ class YandexTTSProvider(TTSProvider):
                 from yandex_speech.tts_v3 import grpc_sdk
                 grpc_sdk()
             return True
-        except Exception:
+        except SpeechError as error:
+            logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
+            return False
+        except Exception as error:
+            logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                "ready": False, "local_only": True, "category": "PREREQUISITE",
+                "error_type": type(error).__name__}))
             return False
 
     def list_models(self):
@@ -142,7 +150,7 @@ class YandexTTSProvider(TTSProvider):
         self._empty_allocation(requested)
         fmt = {"ogg": "oggopus", "opus": "oggopus"}.get(format, format)
         if fmt not in {"mp3", "wav", "oggopus"}:
-            fmt = "wav"
+            raise SpeechError("CONFIG", "native file synthesis requires MP3, WAV or Ogg/Opus; no format was substituted")
         extension = {"mp3": ".mp3", "wav": ".wav", "oggopus": ".ogg"}[fmt]
         target = requested.with_suffix(extension)
         before = self._empty_allocation(target)
@@ -163,14 +171,19 @@ class YandexTTSProvider(TTSProvider):
             metadata = getattr(client, "last_synthesis", {})
             receipt = {name: metadata[name] for name in (
                 "api_version", "transport", "method", "voice", "model", "role", "format", "parts",
-                "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes")
+                "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes",
+                "submitted_part_lengths", "output_part_lengths", "request_attempts", "rpc_calls", "unsafe_mode")
                 if name in metadata}
             receipt.update(output=str(output), input_characters=len(text),
-                           elapsed_seconds=time.monotonic()-started)
+                           elapsed_seconds=time.monotonic()-started,
+                           file_ready_timestamp=time.time(), process_id=os.getpid())
             receipt.setdefault("method", "utterance")
             logging.getLogger(__name__).info("Yandex native TTS receipt %s", json.dumps(receipt))
             return str(output)
         except Exception as error:
+            if isinstance(error, SpeechError) and error.category == "CONFIG" and not getattr(client, "last_synthesis", None):
+                logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                    "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
             retain = getattr(error, "partial_dir", None) is not None or staged_output.is_file()
             if retain and getattr(error, "partial_dir", None) is None:
                 error.partial_dir = stage
