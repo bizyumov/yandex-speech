@@ -46,7 +46,7 @@ class LiveNativeTests(unittest.TestCase):
 
     def run_cases(self, cases, scope):
         from tools.tts_tool_delivery import _resolve_max_text_length, _split_text_for_tts
-        import yaml
+        from ruamel.yaml import YAML
         workspace, root, gateway, receipt = self.prepare_run(scope)
         source = receipt["source_digest"]
         env_before = receipt["credential_before_sha256"]
@@ -95,7 +95,7 @@ class LiveNativeTests(unittest.TestCase):
                             "format=duration,format_name:stream=codec_name,sample_rate", "-of", "json",
                             str(delivered)], capture_output=True, check=True, timeout=30)
                         traces = native_traces(native_log_lines(cursor), directory)
-                        profile = yaml.safe_load((workspace / "config.yaml").read_text())["tts"]
+                        profile = YAML(typ="safe").load((workspace / "config.yaml").read_text())["tts"]
                         outer = _split_text_for_tts(case["text"], _resolve_max_text_length("yandex", profile))
                         self.assertEqual(len(traces), len(outer))
                         self.assertEqual(result["chunk_count"], len(outer))

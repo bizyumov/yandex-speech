@@ -6,7 +6,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-import yaml
+import io
+from ruamel.yaml import YAML
+
+
+def dump_yaml(document):
+    stream = io.StringIO()
+    YAML(typ="safe").dump(document, stream)
+    return stream.getvalue()
 
 from tests.issue83_cases import native_cases
 from tests.provider.issue83_fixtures import SpeechSelection
@@ -26,7 +33,7 @@ class NativeSelectionTests(unittest.TestCase):
             "providers": {"yandex": {"type": "command", "command": command, "format": "oggopus"}}},
             "display": {"tool_progress": "all"}}
         self.config = self.workspace / "config.yaml"
-        self.config.write_text(yaml.safe_dump(self.original))
+        self.config.write_text(dump_yaml(self.original))
         self.preferences = self.workspace / ".config/yandex-speech/config.json"
         self.preferences.parent.mkdir(parents=True)
         self.before = b'{"speech":{"language_code":"en-US","tts":{"default_voice":"ermil"}}}'
@@ -41,12 +48,12 @@ class NativeSelectionTests(unittest.TestCase):
 
     def test_real_native_cli_scoped_change_and_exact_rollback(self):
         with SpeechSelection(self.gateway, self.evidence) as selection:
-            self.assertNotIn("providers", yaml.safe_load(self.config.read_text())["tts"])
+            self.assertNotIn("providers", YAML(typ="safe").load(self.config.read_text())["tts"])
             selection.select(native_cases()[0])
             active = json.loads(self.preferences.read_text())
             self.assertEqual(active["speech"]["language_code"], "en-US")
             self.assertEqual(active["speech"]["tts"]["file_method"], "utterance")
-        self.assertEqual(yaml.safe_load(self.config.read_text()), self.original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
         self.assertEqual(self.preferences.read_bytes(), self.before)
         self.assertEqual(self.preferences.stat().st_mode & 0o777, 0o640)
         self.assertTrue(json.loads((self.evidence / "rollback-result.json").read_text())["restored"])
@@ -62,7 +69,7 @@ class NativeSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "synthetic"):
                 with selection:
                     self.fail("failed setup must not enter")
-        self.assertEqual(yaml.safe_load(self.config.read_text()), self.original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
         self.assertEqual(self.preferences.read_bytes(), self.before)
 
     def test_concurrent_preferences_are_preserved_and_reported(self):
@@ -71,19 +78,19 @@ class NativeSelectionTests(unittest.TestCase):
                 selection.select(native_cases()[0])
                 self.preferences.write_bytes(b'{"speech":{"language_code":"kk-KZ"}}')
         self.assertEqual(self.preferences.read_bytes(), b'{"speech":{"language_code":"kk-KZ"}}')
-        self.assertEqual(yaml.safe_load(self.config.read_text()), self.original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
         self.assertFalse(json.loads((self.evidence / "rollback-result.json").read_text())["restored"])
 
     def test_unknown_command_shadow_is_refused_before_any_native_write(self):
-        original = yaml.safe_load(self.config.read_text())
+        original = YAML(typ="safe").load(self.config.read_text())
         original["tts"]["providers"]["yandex"]["command"] = "opaque-program secret"
-        self.config.write_text(yaml.safe_dump(original))
+        self.config.write_text(dump_yaml(original))
         with patch.object(SpeechSelection, "_native") as native:
             with self.assertRaisesRegex(ValueError, "reviewed migration"):
                 with SpeechSelection(self.gateway, self.evidence):
                     self.fail("opaque command cannot enter")
         native.assert_not_called()
-        self.assertEqual(yaml.safe_load(self.config.read_text()), original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), original)
 
     def test_active_work_blocks_every_rollback_write_and_retains_recovery(self):
         selection = SpeechSelection(self.gateway, self.evidence)
@@ -142,20 +149,20 @@ class NativeSelectionTests(unittest.TestCase):
         from tests.issue83_cases import rollover_cases
         with SpeechSelection(self.gateway, self.evidence) as selection:
             selection.select(rollover_cases()[0])
-            self.assertEqual(yaml.safe_load(self.config.read_text())["tts"]["yandex"]["max_text_length"], 10000)
+            self.assertEqual(YAML(typ="safe").load(self.config.read_text())["tts"]["yandex"]["max_text_length"], 10000)
             selection.select(native_cases()[0])
-            self.assertNotIn("max_text_length", yaml.safe_load(self.config.read_text())["tts"]["yandex"])
+            self.assertNotIn("max_text_length", YAML(typ="safe").load(self.config.read_text())["tts"]["yandex"])
             selection.select(rollover_cases()[1])
-        self.assertEqual(yaml.safe_load(self.config.read_text()), self.original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)
         self.assertEqual(self.preferences.read_bytes(), self.before)
 
     def test_crossing_yaml_aliases_are_refused_before_native_mutation(self):
         shared = self.original["tts"]["providers"]
         self.original["stt"] = {"providers": shared}
-        self.config.write_text(yaml.safe_dump(self.original))
+        self.config.write_text(dump_yaml(self.original))
         with patch.object(SpeechSelection, "_native") as native:
             with self.assertRaisesRegex(ValueError, "shared YAML mapping"):
                 with SpeechSelection(self.gateway, self.evidence):
                     self.fail("crossing alias must not enter")
         native.assert_not_called()
-        self.assertEqual(yaml.safe_load(self.config.read_text()), self.original)
+        self.assertEqual(YAML(typ="safe").load(self.config.read_text()), self.original)

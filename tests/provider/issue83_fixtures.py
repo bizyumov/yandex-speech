@@ -12,7 +12,7 @@ import time
 import uuid
 
 import requests
-import yaml
+from ruamel.yaml import YAML
 
 from yandex_speech.artifacts import atomic_write
 from yandex_speech.errors import SpeechError
@@ -343,7 +343,7 @@ class SpeechSelection:
         self.outer_changed = False
 
     def _config(self):
-        return yaml.safe_load(self.native_path.read_text())
+        return YAML(typ="safe").load(self.native_path.read_text())
 
     def _native(self, *arguments):
         result = subprocess.run(["hermes", "config", *arguments], capture_output=True, text=True, timeout=30)
