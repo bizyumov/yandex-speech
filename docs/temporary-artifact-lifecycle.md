@@ -1,110 +1,79 @@
-# Specification: automatic disposal of temporary speech artifacts — #98
+# Spec: automatic S3 upload cleanup and abandoned TTS fragments (#98)
 
-**Status: Specify — awaiting operator review.** Owner-requested addition to PR #97.
-GitHub issue #98 is the requirements authority; this file is its complete review
-projection. Existing #83 implementation approval remains effective for its existing
-scope. This addition is not implemented or commissioned by publishing this spec.
+**Status: Specify — awaiting operator review.** Included in PR #97. Issue #98
+is the requirements authority; this file is its complete review projection.
 
-## Objective and scope
+## Objective
 
-After speech work stops needing its own temporary data, remove that data without
-requiring the agent to remember a separate housekeeping step. Preserve originals,
-final exports, other operations and data still needed by accepted cloud work.
-Cover both standalone SDK/CLI and stock Hermes STT/TTS integration in PR #97.
+Automatically delete **temporary audio objects uploaded by this skill to Yandex
+Object Storage through its S3 API** once recognition no longer needs them. The
+agent must not have to remember a separate S3 cleanup call after each transcript.
+The original local recording and the saved transcript must remain available.
 
-Assumptions made explicit: automatic disposal is the normal lifecycle, not an
-opt-in retention timer; only invocation-owned intermediates are disposable;
-a local cancellation is not confirmation that a cloud job stopped. No arbitrary
-age, scheduled sweeper, bucket-wide operation or Hermes source change is proposed.
+The primary scope is the S3 upload lifecycle in standalone SDK/CLI and stock
+Hermes recognition. The secondary scope, already present in #98, is disposal of
+abandoned local TTS fragments. Both belong in the existing PR #97.
 
-## Inspected baseline
+Assumptions made explicit: automatic deletion follows operation state, without a
+retention timer; only skill-owned temporary data is eligible; stopping a local
+wait does not prove that an accepted cloud recognition job stopped.
 
-Application revision: 872fb98c3072ad7fdeec702d4ad7e2eadbe16dec.
+At the inspected application baseline 872fb98, S3 upload receipts declare
+`retention: retain`, and normal recognition completion does not invoke the existing
+`ObjectStorageUploader.cleanup()`. That method already checks a matching completed
+job, a durable saved result and an immutable S3 object version. This change adds
+automatic lifecycle handling while preserving those ownership protections.
 
-- Upload receipts say `retention: retain`. Normal recognition completion does not
-  call the existing uploader cleanup method.
-- Existing cleanup requires a matching completed/no-speech job, durable saved
-  result and exact immutable uploaded version. Keep these ownership protections.
-- Local STT cancellation cancels local RPC/waiting. It does not establish remote
-  cancellation. A local failed/cancelled status alone cannot authorize deletion.
-- TTS retains partial parts after failure; the native provider can retain its
-  own staging directory. Neither interface currently exposes a supported general
-  recovery operation for those abandoned synthesis parts.
-- Issue #98 already records a versioned synthetic-object live canary and explicit
-  cleanup. That is prior evidence, not a new test of the proposed automatic path.
+The required S3 behavior is:
 
-## Required lifecycle
-
-| Observed operation state | Required disposition |
+| S3 upload / recognition condition | Required action |
 |---|---|
-| Recognition result is durably saved and no other accepted consumer needs the upload | Automatically dispose of the exact owned upload version before returning the completed operation. Preserve the saved result and final exports. |
-| Provider confirms terminal recognition failure/cancellation; no remaining consumer or supported recovery needs the input | Dispose of the owned upload; preserve its receipt and useful error diagnostics. |
-| Recognition was definitely never submitted | Dispose of the operation's verified upload when the attempted operation ends. |
-| Provider acceptance is uncertain, an accepted job is still active, or only the local wait was cancelled/timed out | Preserve the upload and durable job identity. Reconcile provider state by read/recovery before deciding disposal; never resubmit speech to obtain cleanup evidence. |
-| TTS succeeds | Publish the complete final output first, then dispose of owned staging and intermediate parts. Returned final audio remains available for the caller/host to deliver. |
-| TTS fails, is cancelled or its caller closes the producer | Stop owned producers and dispose of abandoned fragments/staging. Retain parts only while a real supported continuation within that operation needs them. Unreachable directories are not recovery. |
-| Process exits abruptly | On the next invocation/recovery in the same owned state scope, reconcile registered artifact receipts. Skip active owners and uncertain cloud jobs; reclaim only proven eligible artifacts. No age-based inference. |
-| Deletion is denied, fails or has an uncertain response | Persist `cleanup_pending` with the exact owned target and actionable cause. Provide disposal-only retry; never report the artifact deleted without verification. |
+| Inline recognition; no S3 upload was created | Perform no S3 upload or deletion for cleanup. |
+| Skill-created S3 upload; cloud job accepted and still running | Keep the S3 object available to that job. |
+| Recognition completed, transcript durably saved, no other consumer needs the upload | Automatically delete that exact owned S3 object version before returning completion; preserve the recording, saved result and exported transcript. |
+| Provider confirms terminal failure or reports cancellation, with no remaining consumer or supported recovery needing the input | Delete the eligible owned S3 object version; preserve the job/upload receipt and useful error. |
+| Upload succeeded but recognition was definitely never submitted | Delete the eligible owned S3 object version when that attempted operation ends. |
+| Recognition acceptance is uncertain, or the local wait was cancelled/timed out | Keep the S3 object and job/upload receipts; reconcile the existing cloud job before disposal. Never submit recognition again merely to clean S3. |
+| S3 PUT acknowledgement was lost | Recover the existing upload identity through its ownership receipt and S3 inspection; do not repeat PUT or recognition. Delete only after ownership, version and consumer state are established. |
+| Process stopped before S3 cleanup finished | The next invocation/recovery in the same owned state scope reconciles the saved receipt and retries eligible deletion. Live owners and accepted/uncertain jobs stay protected. |
+| S3 deletion is denied, fails or its response is lost | Persist cleanup-pending with the exact target and cause; verify/retry that same deletion without re-uploading audio or repeating paid speech work. |
 
-Unconditional failure-fragment retention in #83 is superseded by this owner-requested
-addition only after its specification approval. This addition does not invent TTS
-cloud operation IDs or a new paid synthesis recovery method.
+Each S3 deletion must address the receipt's **bucket, key and immutable VersionId**
+using the existing S3 client. Verify that exact version's ownership before deleting
+it. Preserve unrelated objects and newer versions at the same key. A second active
+consumer prevents deletion. A caller-supplied S3/HTTPS URL without the skill's
+ownership receipt does not authorize deletion.
 
-## Ownership and recovery contract
+If the S3 object has no immutable version or ownership cannot be verified, retain
+it with an explicit cleanup-pending prerequisite and an actionable receipt.
+Do not silently enable bucket versioning, change retention, bypass a deletion
+restriction or claim cleanup succeeded. Missing S3 inspection/deletion permission
+must identify the failed operation without changing IAM or credentials.
 
-1. Register ownership before creating/uploading an intermediate; preserve enough
-   durable state to reconcile a crash between mutation and acknowledgement.
-2. An owned S3 object is identified by its upload receipt, bucket, key, immutable
-   version and verified ownership metadata. Do not delete caller-supplied URLs,
-   originals, another version or an entire prefix. A second consumer must prevent
-   disposal until it also releases the artifact.
-3. Preserve the existing refusal to delete an unversioned or unverifiable object.
-   Report the exact prerequisite as `cleanup_pending`; do not silently enable
-   versioning, modify retention or discard the receipt. Recognition/result
-   recovery must remain available without another paid recognition request.
-4. Track local artifacts by their recorded operation ownership and active lease;
-   a basename, directory prefix, PID alone or file age does not prove ownership.
-   Preserve unrelated entries, externally replaced files and final output paths.
-5. Disposal is idempotent. Resolve a lost delete reply by checking that exact
-   owned version/path. Concurrent live owners and incomplete recovery must remain
-   protected. An absent owned target can settle a pending deletion.
-6. Expose disposal status on durable operation receipts and SDK/CLI diagnostics:
-   deleted, retained-active, retained-uncertain, retained-recovery or cleanup-pending,
-   with a reason and receipt reference. Do not log audio/text or credentials.
-7. A cleanup failure must not hide the primary speech failure or invalidate an
-   already saved speech result. Make the cleanup failure observable in the stock
-   integration as well as standalone calls.
-8. Provide a documented disposal-only retry addressed to a receipt. Its contract
-   is read/reconcile/delete only: no recognition, synthesis, upload or account/key
-   mutation. Exact implementation/API placement belongs to the next Plan phase.
+S3 cleanup failure must neither hide a recognition failure nor invalidate a saved
+successful transcript. Expose the cleanup outcome to SDK/CLI and the stock Hermes
+integration. Provide receipt-addressed disposal-only retry: inspect/reconcile/delete,
+with zero new speech submissions. Exact API placement belongs to Plan.
 
-## Stack, structure and style
+For the secondary TTS scope: after final audio publication, remove its owned staging
+and intermediates while preserving the returned audio for delivery. On terminal
+failure, cancellation or producer close, dispose of abandoned parts. Keep fragments
+only while a real supported continuation still needs them. The current general
+TTS interfaces do not expose a recovery operation for abandoned directories;
+indefinite retention is not recovery. This proposed rule replaces unconditional
+failed-part retention in #83 after approval. It creates no new TTS cloud-operation ID.
 
-Use existing Python >=3.11, standard-library file/locking/JSON facilities and the
-existing optional boto3==1.42.89 storage profile. This change does not require a
-new runtime, package installation, gRPC dependency or daemon.
+## Tech Stack
 
-Relevant existing code: `yandex_speech/storage.py`, `transcription.py`, `jobs.py`,
-`artifacts.py`, `scripts/tts.py`, `tts_stream_file.py` and the stock providers in
-`integrations/hermes/`. Tests belong in `tests/`; portable agent instructions
-belong in `SKILL.md` and `references/`. Private execution evidence stays outside
-published files. The Plan phase will choose the minimal file/change boundaries.
+Python >=3.11; existing standard-library file, locking and JSON facilities;
+existing optional S3 profile `boto3==1.42.89`. Reuse the existing S3 client,
+credential resolution and ownership receipts. This change requires no new runtime,
+package installation, daemon or gRPC dependency.
 
-Follow existing snake_case APIs, `SpeechError` categories, durable receipt updates
-and explicit ownership checks. An existing style example to preserve is:
+## Commands
 
-```python
-if not version or version == "null":
-    raise SpeechError("PREREQUISITE", "safe cleanup requires an immutable uploaded object version")
-```
-
-Do not replace a useful error/receipt with a bare successful-looking return.
-
-## Commands and verification
-
-All execution uses the configured standard Hermes environment. Inside Hermes,
-invoke plain `python`; outside it, retrieve the active configured environment and
-verify `sys.prefix == VIRTUAL_ENV` before executing. No private/project venv.
+Use the configured standard Hermes environment. Inside Hermes use plain `python`;
+outside it retrieve that environment and verify `sys.prefix == VIRTUAL_ENV`.
 
 ```sh
 python -m unittest discover -s tests -v
@@ -113,65 +82,117 @@ GITMARK_NO_GIT=1 gitmark --root . index
 gitmark --root . lint
 ```
 
-Implementation verification must answer these finite questions:
+These are verification commands for subsequent implementation. No new cleanup CLI
+command is claimed to exist at Specify; its executable interface belongs to Plan.
 
-- Does a completed operation leave only the intended result, with its owned
-  temporary object/staging removed and unrelated data preserved?
-- Can active/uncertain work and concurrent consumers prevent premature deletion?
-- Can failure, cancellation and process restart dispose of eligible artifacts
-  without another paid speech submission?
-- Is denied/uncertain cleanup visible and retryable while the original result
-  or error remains usable?
+## Project Structure
 
-Use deterministic local fixtures for failure, cancellation, concurrent ownership,
-version replacement, missing permissions, lost delete replies and process restart.
-Do not create a voices/transports/length cross-product for cleanup verification.
-For commissioning, propose only two focused One-ring canaries: one synthetic
-storage-backed recognition and one ordinary short native TTS reply. Each proves
-result delivery plus the artifact disposition of that same operation. Disposal
-retry must add zero paid speech submissions. The separate 65-case matrix remains
-paused; these canaries are a proposed acceptance scope, not executed tests or
-permission to alter live agent configuration.
+```text
+yandex_speech/storage.py       S3 upload receipts, exact-version inspection/deletion
+yandex_speech/transcription.py Recognition submission, completion and recovery
+yandex_speech/jobs.py          Durable recognition job and saved-result state
+yandex_speech/artifacts.py     Existing local ownership/publication utilities
+scripts/tts.py                Complete synthesis and owned intermediate parts
+yandex_speech/tts_stream_file.py Streaming-file synthesis and partial output
+integrations/hermes/          Stock STT/TTS provider integration
+tests/                        Local lifecycle, ownership and fault tests
+SKILL.md, references/          Agent instructions, S3 prerequisites and recovery
+```
 
-## Acceptance criteria
+Keep private execution evidence outside published files. Choose the minimal
+implementation boundaries during Plan rather than introducing another subsystem
+or a competing task queue here.
 
-- [ ] **AC98-01 — completed recognition:** after durable result publication, normal
-  SDK/CLI/stock integration automatically deletes only the eligible owned uploaded
-  version. Originals, saved transcripts, unrelated/newer versions and final exports
-  survive. Inline recognition creates no cleanup upload.
-- [ ] **AC98-02 — safe terminal disposition:** confirmed terminal provider failure,
-  confirmed remote cancellation and definite pre-submission failure release their
-  eligible uploads. Local cancellation/timeout, active accepted work and uncertain
-  acceptance preserve the source until reconciled. Local status alone is insufficient.
-- [ ] **AC98-03 — synthesis disposal:** successful file/stream work preserves the
-  complete final output and removes its intermediates. Failure, cancellation and
-  producer close remove abandoned parts/staging from standalone and native calls,
-  including both `.yandex-speech-partial-*` and `.yandex-native-tts-*` ownership cases.
-- [ ] **AC98-04 — restart and concurrency:** after process interruption the next
-  owned recovery/invocation reconciles registered state, skips live owners/consumers
-  and disposes of only eligible artifacts. No periodic or age-based sweep is used.
-- [ ] **AC98-05 — retry and uncertainty:** denied/failed/uncertain deletion records
-  cleanup-pending, remains actionable and retries idempotently without upload or
-  paid speech replay. Exact-target absence can resolve a lost deletion response.
-- [ ] **AC98-06 — protected data:** no original, caller URL, unrelated/replaced local
-  file, other object version or final export is deleted. Unversioned/unverifiable
-  targets stay pending with a precise prerequisite; no IAM/retention change occurs.
-- [ ] **AC98-07 — observable integration:** durable receipts and SDK/CLI/native
-  diagnostics expose disposition and cause without secrets or productive text/audio.
-  Cleanup failure neither hides the speech error nor loses a saved successful result.
-- [ ] **AC98-08 — bounded evidence:** local fault/restart/ownership checks pass in the
-  standard Hermes runtime; the two focused One-ring canaries prove result delivery
-  and disposal at the tested source revision before commissioning. Old explicit
-  cleanup evidence, mocks alone and a merged PR are not commissioning evidence.
+## Code Style
 
-## Boundaries and approval
+Preserve existing snake_case APIs, `SpeechError` categories and durable receipt
+updates. Keep S3 ownership checks explicit. The existing exact-version cleanup
+style includes this check:
 
-Always preserve ownership, active work, productive outputs, standard runtime and
-stock Hermes interfaces. Ask first for live IAM/credential changes, bucket policy
-changes, dependency/runtime changes or extra paid test dimensions. Never delete
-by prefix/age, patch Hermes, resubmit accepted speech for cleanup, resume the held
-65-case matrix or claim acoustic/commissioning acceptance from these checks.
+```python
+if response.get("VersionId") != version:
+    raise SpeechError("STATE", "storage did not identify the exact owned version")
+```
 
-No unresolved product question is delegated to the operator. Review is requested
-on whether this specification faithfully and completely expresses #98. Approval
-advances this addition to Plan, not implementation, commissioning or release.
+A successful-looking return cannot replace a failed deletion or its receipt.
+Diagnostics must describe the S3 action and disposition without audio, transcript
+content or credentials.
+
+## Testing Strategy
+
+Use existing unittest fixtures in `tests/` and the standard Hermes runtime.
+Test these S3 questions locally with deterministic storage/provider fixtures:
+
+- Does normal completion remove only the uploaded S3 version after saving the
+  transcript, while preserving the local original, other objects and newer versions?
+- Do active consumers, uncertain acceptance and local cancellation prevent
+  premature S3 deletion?
+- Do definite rejection, terminal provider failure and process restart lead to
+  eligible cleanup without another PUT or recognition submission?
+- Can denied/uncertain S3 deletion be retried, including a lost response followed
+  by confirmed absence, without losing the transcript or masking its error?
+
+Local tests must also verify that recorded local ownership protects unrelated or
+replaced files, and that final TTS output survives while abandoned staging is removed.
+Use recorded ownership and a live ownership lease; names, prefixes, PID alone and
+file age are insufficient evidence. No directory/prefix sweep is acceptance.
+
+Proposed commissioning scope is two focused One-ring canaries: **one synthetic
+S3-backed recognition**, proving delivered transcript plus deletion of its owned
+S3 version, and **one short native TTS reply**, proving delivered audio plus local
+staging disposal. Fault combinations stay local. Cleanup retry adds zero paid
+speech submissions. The 65-case matrix remains paused. These canaries are proposed,
+not executed tests or permission to modify live agent configuration.
+
+## Boundaries
+
+- Always: register ownership before creating/uploading intermediates; preserve
+  enough durable state to reconcile a lost acknowledgement or process interruption;
+  preserve originals, final outputs and active consumers; use stock Hermes interfaces
+  and the standard runtime; report exact S3 cleanup disposition and receipt.
+- Ask first: live IAM/credential, bucket-versioning/retention or runtime/dependency
+  changes, and additional paid test dimensions.
+- Never: delete caller-owned S3 sources, unrelated/newer versions or final exports;
+  delete by prefix/age; resubmit paid speech for housekeeping; patch Hermes; resume
+  the paused 65-case matrix; claim acoustic or commissioning acceptance from mocks.
+
+## Success Criteria
+
+- [ ] **AC98-01 — S3 after successful recognition:** normal SDK/CLI/stock integration
+  automatically deletes the eligible owned S3 version after durable result saving.
+  Local originals, saved/exported transcripts, unrelated S3 objects and newer versions
+  survive. Inline recognition creates no S3 cleanup upload.
+- [ ] **AC98-02 — S3 after failure/cancellation:** confirmed terminal provider failure,
+  provider-reported cancellation and definite pre-submission failure release eligible
+  S3 uploads. Accepted running jobs, uncertain acceptance and local cancellation/timeout
+  preserve S3 input until reconciled. Local failed/cancelled status alone is insufficient.
+- [ ] **AC98-03 — secondary TTS fragments:** successful synthesis preserves final audio
+  and removes owned intermediates. Failure, cancellation and producer close dispose of
+  abandoned standalone/native fragments, including the ownership cases represented by
+  `.yandex-speech-partial-*` and `.yandex-native-tts-*`; no prefix sweep is allowed.
+- [ ] **AC98-04 — S3/local restart and concurrency:** next owned invocation/recovery
+  reconciles registered receipts after interruption, skips live owners/consumers and
+  removes only eligible S3 versions/local intermediates. No periodic/age-based sweep.
+- [ ] **AC98-05 — S3/local cleanup retry:** denied, failed or uncertain deletion is
+  persisted as cleanup-pending and retried idempotently. Exact-target absence can
+  settle an uncertain deletion. Retry performs no new upload or paid speech submission.
+- [ ] **AC98-06 — S3/local protection:** bucket/key/VersionId and ownership checks prevent
+  deletion of originals, caller URLs, unrelated/newer S3 versions, replaced local files
+  and final exports. Unversioned/unverifiable S3 targets remain pending with a precise
+  prerequisite; no IAM, versioning or retention mutation occurs.
+- [ ] **AC98-07 — S3 diagnostics and result preservation:** durable receipts and SDK/CLI/
+  native diagnostics expose deletion, retained-active, retained-uncertain,
+  retained-recovery or cleanup-pending disposition, cause and recovery reference.
+  Cleanup failure neither masks the speech error nor loses a successful saved result.
+  No productive payload or credential is logged.
+- [ ] **AC98-08 — bounded evidence:** local fault/restart/ownership tests pass; the focused
+  One-ring S3 recognition proves delivered transcript plus owned-version removal, and
+  the short native TTS canary proves delivered audio plus staging disposal at the tested
+  revision. Prior explicit cleanup, mocks alone and merge do not prove automatic cleanup.
+
+## Open Questions
+
+No unresolved product choice is delegated to the operator. The review decision is
+whether this S3-first specification faithfully and completely expresses #98 and its
+secondary TTS requirement. Approval advances this addition to Plan, not implementation,
+commissioning or release. Existing #83 authorization and its test pause remain unchanged.
