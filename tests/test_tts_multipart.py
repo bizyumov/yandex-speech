@@ -69,3 +69,38 @@ class MultipartSynthesisTests(unittest.TestCase):
         self.assertTrue(Path(cm.exception.partial_dir).is_dir())
         self.assertTrue(list(Path(cm.exception.partial_dir).glob("*.wav")))
         self.assertEqual(self.client.last_synthesis["status"],"incomplete")
+
+    def test_native_file_sdk_assembles_real_ogg_parts_for_both_apis(self):
+        from types import SimpleNamespace
+        from tests.test_tts_audio import encoded_tone, decoded_pcm, tone_strength, measured_frame_samples
+        parts = [encoded_tone(440), encoded_tone(880)]
+        cases = [
+            ("1", "я" * 3000, dict(model="general", voice="ermil", role="good")),
+            ("3", "я" * 251, dict(model="livetts", voice="sergey", role="sales")),
+        ]
+        for version, text, selection in cases:
+            with self.subTest(api=version):
+                target = self.root / ("complete-" + version + ".ogg")
+                if version == "1":
+                    responses = [SimpleNamespace(status_code=200,
+                        headers={"Content-Type": "audio/ogg"}, content=part) for part in parts]
+                else:
+                    responses = [Response([{"result": {"audioChunk": {
+                        "data": base64.b64encode(part).decode()}}}]) for part in parts]
+                with patch("scripts.tts.requests.post", side_effect=responses) as post:
+                    outputs = self.client.synthesize(text, target, api_version=version,
+                        transport="rest", fmt="oggopus", **selection)
+                self.assertEqual(outputs, [target])
+                self.assertEqual(post.call_count, 2)
+                field = "data" if version == "1" else "json"
+                self.assertEqual("".join(call.kwargs[field]["text"] for call in post.call_args_list), text)
+                self.assertEqual(self.client.last_synthesis["api_version"], version)
+                self.assertEqual(self.client.last_synthesis["parts"], 2)
+                pcm = decoded_pcm(target.read_bytes())
+                expected_frames = sum(len(decoded_pcm(part)) for part in parts)
+                self.assertLessEqual(abs(len(pcm) - expected_frames),
+                                     max(measured_frame_samples(part) for part in parts))
+                self.assertGreater(tone_strength(pcm[2400:7200], 440),
+                                   10 * tone_strength(pcm[2400:7200], 880))
+                self.assertGreater(tone_strength(pcm[-7200:-2400], 880),
+                                   10 * tone_strength(pcm[-7200:-2400], 440))

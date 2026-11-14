@@ -30,6 +30,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(settings.value("api_version"), "auto")
         self.assertEqual(settings.path, self.config)
 
+    def test_file_method_uses_existing_precedence_and_strict_values(self):
+        self.assertEqual(resolve_settings(_context=self.context, _environment={}).value("tts.file_method"), "auto")
+        self.put({"speech": {"tts": {"file_method": "utterance", "unsafe_mode": False}}})
+        settings = resolve_settings(_context=self.context, _environment={},
+            _adapter={"tts": {"file_method": "stream", "unsafe_mode": True}})
+        self.assertEqual(settings.value("tts.file_method"), "utterance")
+        self.assertFalse(settings.value("tts.unsafe_mode"))
+        self.assertEqual(settings.sources["tts.file_method"], "config")
+        explicit = resolve_settings(_context=self.context, _environment={},
+            _explicit={"tts": {"file_method": "stream"}})
+        self.assertEqual(explicit.value("tts.file_method"), "stream")
+        self.assertEqual(explicit.sources["tts.file_method"], "call")
+        for value in ("", "streaming", 1, None):
+            with self.subTest(value=value), self.assertRaises(SpeechError):
+                resolve_settings(_context=self.context, _environment={},
+                    _explicit={"tts": {"file_method": value}})
+
     def test_storage_env_overrides_saved_defaults_but_endpoint_comes_from_skill(self):
         self.put({"speech": {"object_storage": {"bucket": "saved-bucket", "prefix": "saved-prefix"}}})
         settings = resolve_settings(_context=self.context, _environment={

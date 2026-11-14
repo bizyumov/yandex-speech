@@ -4,6 +4,8 @@ All notable changes are recorded here. VERSION is the sole release-version sourc
 
 ## Unreleased
 
+- Fix #83: route complete-file TTS through readiness filtering before stream-first v3/REST selection; preserve voice/model/role and explicit constraints, repair multipart Ogg output, retain incomplete work without replay, and align SDK/CLI/native readiness with saved WAV-rate controls.
+
 - Fix #81: automatic recording recognition admits inline audio before using configured S3; reserve optional uploads for explicit inline-size failures, preserve explicit storage/recovery, and document provider limits separately from client wire guards.
 
 - Add S3 bucket/prefix setup with skill defaults, higher-priority env coordinates, scoped access probes and bucket creation via static credentials; keep endpoint in skill configuration instead of env.

@@ -1,5 +1,9 @@
 """Native Hermes file/PCM synthesis with per-call profile-bound clients."""
 from pathlib import Path
+import json
+import logging
+import os
+import time
 import shutil
 import stat
 import tempfile
@@ -33,7 +37,8 @@ class YandexTTSProvider(TTSProvider):
         native = self.profile.get("yandex") or {}
         adapter = {}
         for source, target in (("language", "default_lang"), ("role", "default_emotion"),
-                               ("api_version", "api_version"), ("transport", "transport")):
+                               ("api_version", "api_version"), ("transport", "transport"),
+                               ("file_method", "file_method"), ("unsafe_mode", "unsafe_mode")):
             if native.get(source) is not None:
                 adapter[target] = native[source]
         for source, target, hint in (("voice", "default_voice", voice),
@@ -56,11 +61,23 @@ class YandexTTSProvider(TTSProvider):
             raise SpeechError("CONFIG", "native replies require plain text; use the explicit skill SSML operation")
         if pcm:
             if (options["api_version"] == "1" or options["transport"] == "rest"
+                    or options.get("file_method") == "utterance"
                     or options.get("unsafe_mode") or options.get("duration_ms")
                     or "3" not in options["_voice_info"]["versions"]):
                 raise SpeechError("CONFIG", "effective settings do not support native PCM streaming")
             options = dict(options, default_format="lpcm", sample_rate_hertz=24000)
             version = "3"
+        if pcm:
+            from yandex_speech.tts_capabilities import probe_runtime
+            capability = probe_runtime(dict(options, model=options["_model"], role=options["_role"])).stream
+            if not capability.ready:
+                raise SpeechError("PREREQUISITE", capability.reason)
+        elif options["file_method"] != "auto":
+            from yandex_speech.tts_selection import plan_synthesis
+            from yandex_speech.tts_stream_file import stream_contract
+            plan = plan_synthesis("Native availability check.", options, stream_contract=stream_contract(options),
+                sources=settings.sources, config_path=settings.path, profile_scope=self.workspace)
+            version = plan.api_version
         if version == "3":
             from yandex_speech.tts_v3 import request_body
             request_body("Native availability check.", options, sources=settings.sources)
@@ -78,7 +95,14 @@ class YandexTTSProvider(TTSProvider):
                 from yandex_speech.tts_v3 import grpc_sdk
                 grpc_sdk()
             return True
-        except Exception:
+        except SpeechError as error:
+            logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
+            return False
+        except Exception as error:
+            logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                "ready": False, "local_only": True, "category": "PREREQUISITE",
+                "error_type": type(error).__name__}))
             return False
 
     def list_models(self):
@@ -88,7 +112,7 @@ class YandexTTSProvider(TTSProvider):
                 {"id": "livetts", "display": "Yandex LiveTTS"}]
 
     def list_voices(self):
-        return [{"id": name, "display": name + (" (legacy)" if name == "alena" else ""),
+        return [{"id": name, "display": name,
                  "language": info["language"], "model": info["model"]}
                 for name, info in CATALOG.items()]
 
@@ -121,11 +145,12 @@ class YandexTTSProvider(TTSProvider):
     def synthesize(self, text, output_path, *, voice=None, model=None, speed=None,
                    format="mp3", **extra):
         from yandex_speech.artifacts import atomic_write
+        started = time.monotonic()
         requested = Path(output_path)
         self._empty_allocation(requested)
         fmt = {"ogg": "oggopus", "opus": "oggopus"}.get(format, format)
         if fmt not in {"mp3", "wav", "oggopus"}:
-            fmt = "wav"
+            raise SpeechError("CONFIG", "native file synthesis requires MP3, WAV or Ogg/Opus; no format was substituted")
         extension = {"mp3": ".mp3", "wav": ".wav", "oggopus": ".ogg"}[fmt]
         target = requested.with_suffix(extension)
         before = self._empty_allocation(target)
@@ -143,8 +168,22 @@ class YandexTTSProvider(TTSProvider):
             output = target if before is None else target.with_name(
                 target.stem + "-" + uuid.uuid4().hex + extension)
             atomic_write(output, staged_output.read_bytes())
+            metadata = getattr(client, "last_synthesis", {})
+            receipt = {name: metadata[name] for name in (
+                "api_version", "transport", "method", "voice", "model", "role", "format", "parts",
+                "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes",
+                "submitted_part_lengths", "output_part_lengths", "request_attempts", "rpc_calls", "unsafe_mode")
+                if name in metadata}
+            receipt.update(output=str(output), input_characters=len(text),
+                           elapsed_seconds=time.monotonic()-started,
+                           file_ready_timestamp=time.time(), process_id=os.getpid())
+            receipt.setdefault("method", "utterance")
+            logging.getLogger(__name__).info("Yandex native TTS receipt %s", json.dumps(receipt))
             return str(output)
         except Exception as error:
+            if isinstance(error, SpeechError) and error.category == "CONFIG" and not getattr(client, "last_synthesis", None):
+                logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                    "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
             retain = getattr(error, "partial_dir", None) is not None or staged_output.is_file()
             if retain and getattr(error, "partial_dir", None) is None:
                 error.partial_dir = stage

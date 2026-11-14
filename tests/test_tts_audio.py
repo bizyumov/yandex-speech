@@ -1,4 +1,7 @@
 import io
+import json
+import math
+import subprocess
 import struct
 import unittest
 import wave
@@ -46,3 +49,114 @@ class WavFinalizationTests(unittest.TestCase):
         struct.pack_into("<I", original, 40, 0xFFFFFFFF)
         with self.assertRaises(SpeechError):
             finalize_wav(bytes(original[:-1]))
+
+def encoded_tone(frequency, duration=.3):
+    frames = int(48000 * duration)
+    pcm = b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * frequency * i / 48000)))
+                   for i in range(frames))
+    return subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "s16le",
+        "-ar", "48000", "-ac", "1", "-i", "pipe:0", "-c:a", "libopus",
+        "-f", "ogg", "pipe:1"], input=pcm, capture_output=True, check=True, timeout=15).stdout
+
+
+def decoded_pcm(data):
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-i", "pipe:0",
+        "-ar", "48000", "-ac", "1", "-f", "s16le", "pipe:1"],
+        input=data, capture_output=True, check=True, timeout=15).stdout
+    return struct.unpack("<" + "h" * (len(raw) // 2), raw)
+
+def measured_frame_samples(data):
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_packets",
+        "-show_entries", "packet=duration_time", "-of", "json", "pipe:0"],
+        input=data, capture_output=True, check=True, timeout=15)
+    packets = json.loads(result.stdout)["packets"]
+    durations = [round(float(packet["duration_time"]) * 48000) for packet in packets]
+    if not durations or min(durations) <= 0:
+        raise AssertionError("fixture has no measurable codec-frame duration")
+    return max(durations)
+
+
+def tone_strength(samples, frequency):
+    real = sum(value * math.cos(2 * math.pi * frequency * i / 48000)
+               for i, value in enumerate(samples))
+    imaginary = sum(value * math.sin(2 * math.pi * frequency * i / 48000)
+                    for i, value in enumerate(samples))
+    return real * real + imaginary * imaginary
+
+
+class EncodedAssemblyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.parts = [encoded_tone(440), encoded_tone(880)]
+
+    def test_single_ogg_response_is_preserved(self):
+        from yandex_speech.tts_audio import join_audio
+        self.assertEqual(join_audio(self.parts[:1], "oggopus", 48000), self.parts[0])
+        self.assertTrue(decoded_pcm(self.parts[0]))
+
+    def test_multipart_ogg_keeps_both_tones_in_order_and_complete_tail(self):
+        from yandex_speech.tts_audio import join_audio
+        joined = join_audio(self.parts, "oggopus", 48000, timeout=15)
+        pcm = decoded_pcm(joined)
+        expected_frames = sum(len(decoded_pcm(part)) for part in self.parts)
+        self.assertLessEqual(abs(len(pcm) - expected_frames),
+                             max(measured_frame_samples(part) for part in self.parts))
+        first, tail = pcm[2400:7200], pcm[-7200:-2400]
+        self.assertGreater(tone_strength(first, 440), 10 * tone_strength(first, 880))
+        self.assertGreater(tone_strength(tail, 880), 10 * tone_strength(tail, 440))
+
+    def test_multipart_mp3_keeps_order_tail_and_complete_decoded_duration(self):
+        from yandex_speech.tts_audio import join_audio
+        parts = [subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"], input=part,
+            capture_output=True, check=True, timeout=15).stdout for part in self.parts]
+        pcm = decoded_pcm(join_audio(parts, "mp3", 48000))
+        expected = sum(len(decoded_pcm(part)) for part in parts)
+        self.assertLessEqual(abs(len(pcm) - expected), max(measured_frame_samples(part) for part in parts))
+        self.assertGreater(tone_strength(pcm[2400:7200], 440), 10 * tone_strength(pcm[2400:7200], 880))
+        self.assertGreater(tone_strength(pcm[-7200:-2400], 880), 10 * tone_strength(pcm[-7200:-2400], 440))
+
+    def test_wav_and_lpcm_assemble_actual_samples_without_external_tools(self):
+        import io
+        from unittest.mock import patch
+        from yandex_speech.tts_audio import join_audio, wrap_pcm
+        parts = [struct.pack("<hhhh", 100, -100, 200, -200),
+                 struct.pack("<hhhh", 300, -300, 400, -400)]
+        with patch("shutil.which", return_value=None), patch("subprocess.run",
+                side_effect=AssertionError("external tool used for PCM assembly")):
+            raw = join_audio(parts, "lpcm", 16000)
+            wav = join_audio([wrap_pcm(part, 16000) for part in parts], "wav", 16000)
+            self.assertEqual(raw, b"".join(parts))
+            with wave.open(io.BytesIO(wav), "rb") as audio:
+                self.assertEqual((audio.getnchannels(), audio.getsampwidth(), audio.getframerate()), (1, 2, 16000))
+                self.assertEqual(audio.readframes(audio.getnframes()), raw)
+
+class ProviderFramingTests(unittest.TestCase):
+    def test_ogg_framing_requires_ordered_single_container_and_tail(self):
+        from yandex_speech.tts_audio import finalize_audio
+        data = encoded_tone(440)
+        self.assertEqual(finalize_audio(data, "oggopus"), data)
+        for broken in (data[:-1], data[:27], data + data, b"OggS"):
+            with self.subTest(size=len(broken)), self.assertRaises(SpeechError):
+                finalize_audio(broken, "oggopus")
+
+    def test_header_only_wav_and_ogg_fail_while_silent_samples_work(self):
+        from yandex_speech.tts_audio import finalize_audio, wrap_pcm
+        head = b"OpusHead" + b"\1" + b"\1" + b"\0" * 9
+        ogg = (b"OggS\0\6" + b"\0" * 8 + struct.pack("<II", 1, 0) +
+               b"\0" * 4 + bytes([1, len(head)]) + head)
+        for data, fmt in ((wrap_pcm(b"", 48000), "wav"), (ogg, "oggopus")):
+            with self.subTest(format=fmt), self.assertRaises(SpeechError):
+                finalize_audio(data, fmt)
+        self.assertTrue(finalize_audio(wrap_pcm(b"\0\0" * 480, 48000), "wav"))
+        self.assertEqual(finalize_audio(b"\0\0", "lpcm"), b"\0\0")
+
+    def test_mp3_framing_accepts_generated_file_and_rejects_truncated_tail(self):
+        from yandex_speech.tts_audio import finalize_audio
+        data = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", "pipe:0",
+            "-c:a", "libmp3lame", "-f", "mp3", "pipe:1"], input=encoded_tone(440),
+            capture_output=True, check=True, timeout=15).stdout
+        self.assertEqual(finalize_audio(data, "mp3"), data)
+        for broken in (data[:-1], b"ID3", b"not mp3", b""):
+            with self.subTest(size=len(broken)), self.assertRaises(SpeechError):
+                finalize_audio(broken, "mp3")

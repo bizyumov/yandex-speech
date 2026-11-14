@@ -47,7 +47,7 @@ Short arriving-audio recognition is limited to 240 seconds per session. It does 
 
 ## Voices and setup
 
-Choose a supported voice/style using the [voice catalog and pronunciation examples](references/synthesis-provider-testing.md). Ermil's `good` style is distinct from another voice's `friendly`. File synthesis supports REST v1/v3 and gRPC v3; SSML uses v1, while LiveTTS uses v3. Keep explicit saved choices instead of silently substituting a voice or model.
+Choose a supported voice/style using the [voice catalog and pronunciation examples](references/synthesis-provider-testing.md). Ermil's `good` style is distinct from another voice's `friendly`. File synthesis supports REST v1/v3 and gRPC v3; SSML uses v1, while LiveTTS uses v3. The default `file_method=auto` selects a complete ready operation in this order: gRPC v3 streamed file, gRPC v3 utterance, REST v3 utterance, compatible REST v1. Dependencies, requested controls and output assembly determine eligibility. Keep explicit saved choices instead of silently substituting a voice, model or unsafe mode.
 
 For XML pronunciation in Hermes, the plugin supplies `yandex_speech_ssml` and the normal voice-attachment delivery protocol. The built-in speech tool retains its plain-text behavior; see [the SSML route and delivery rule](references/hermes.md#preferences-and-voice-delivery).
 

@@ -1,4 +1,4 @@
-"""Published voice compatibility snapshot; explicit legacy default is retained.
+"""Voice/API associations; method-specific capability is checked separately.
 
 Source: https://aistudio.yandex.ru/en/docs/speechkit/tts/voices
 Retrieved 2026-10-25. Model families never substitute for each other.
@@ -46,8 +46,8 @@ for name,roles,default in [
     ("irina",("formal","support","narrator","sales","neutral"),"neutral"),
 ]:
     _voice(name,"ru-RU",["3"],roles,default,"livetts")
-# Explicitly retained historical v1 compatibility, not a published current-catalog claim.
-_voice("alena","ru-RU",["1"],("neutral","good"),"neutral")
+# REST v1/v3 general/neutral verified 2026-11-12; no streaming claim.
+_voice("alena","ru-RU",["1","3"],("neutral","good"),"neutral")
 
 
 def resolve_voice(options, sources):
@@ -65,7 +65,7 @@ def resolve_voice(options, sources):
     if info is None:
         raise SpeechError("CONFIG", "voice is absent from the supported compatibility catalog; no voice was substituted")
     if voice=="alena" and language!="ru-RU":
-        raise SpeechError("CONFIG", "the retained alena legacy voice requires ru-RU")
+        raise SpeechError("CONFIG", "alena requires ru-RU")
     # Catalog language describes the training/primary language, not an exhaustive
     # provider rejection rule. Preserve explicit cross-language voice requests.
     model = result.get("model", "auto")
@@ -86,13 +86,28 @@ def resolve_voice(options, sources):
 
 def select_version(options):
     version = options["api_version"]
+    method = options.get("file_method", "auto")
+    if method == "stream" and (
+            version == "1" or options["transport"] == "rest"
+            or options["text_format"] == "ssml" or options.get("unsafe_mode", False)):
+        raise SpeechError("CONFIG", "stream requires API v3/gRPC without SSML or unsafe mode")
+    if options.get("unsafe_mode", False) and (version == "1" or options["text_format"] == "ssml"):
+        raise SpeechError("CONFIG", "unsafe mode requires v3 utterance synthesis")
     if options["text_format"] == "ssml":
         if version == "3" or options["transport"] == "grpc" or options["_model"] == "livetts":
             raise SpeechError("CONFIG", "SSML requires a compatible REST v1 voice")
         version = "1"
+    elif (version == "auto" and "1" in options["_voice_info"]["versions"]
+          and (options["_voice_info"]["versions"] == {"1"}
+               or options["default_format"] == "wav" and options.get("_sample_rate_requested"))
+          and options["transport"] != "grpc" and method != "stream"
+          and options.get("model", "auto") in {"auto", "general"}
+          and options.get("volume", -19) == -19 and options.get("pitch_shift", 0) == 0
+          and not options.get("duration_ms", 0) and not options.get("unsafe_mode", False)):
+        version = "1"
     elif version == "auto":
         version = "3" if ("1" not in options["_voice_info"]["versions"]
-                          or options["transport"] == "grpc"
+                          or options["transport"] == "grpc" or method == "stream"
                           or options.get("model","auto") != "auto" or options.get("volume",-19)!=-19
                           or options.get("pitch_shift",0)!=0 or options.get("duration_ms",0)>0
                           or options.get("unsafe_mode",False)) else "1"
@@ -105,3 +120,16 @@ def select_version(options):
     if version == "1" and options["transport"] == "grpc":
         raise SpeechError("CONFIG", "synthesis API v1 requires REST")
     return version
+
+def resolve_file_options(values, sources):
+    """Resolve the shared SDK/readiness controls with their saved provenance."""
+    options = resolve_voice(values, sources)
+    sample_source = sources.get("tts.sample_rate_hertz", "builtin")
+    options["_sample_rate_requested"] = sample_source != "builtin"
+    version = select_version(options)
+    rate_selected = sample_source == "call" or (
+        options["default_format"] == "wav" and options["_sample_rate_requested"])
+    if rate_selected and options["default_format"] != "lpcm" and not (
+            version == "1" and options["default_format"] == "wav"):
+        raise SpeechError("CONFIG", "sample-rate applies to LPCM output, not this container method")
+    return options, version

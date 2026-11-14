@@ -386,6 +386,73 @@ class HermesTTSBindingTests(unittest.TestCase):
         self.assertEqual(settings.sources["tts.default_voice"], "config")
         self.assertEqual(settings.sources["tts.default_emotion"], "config")
 
+    def test_native_method_defaults_stay_below_user_file_and_false_is_preserved(self):
+        provider = self.provider({"voice": "ermil", "yandex": {
+            "file_method": "stream", "unsafe_mode": True}})
+        path = self.home / ".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"speech": {"tts": {
+            "file_method": "utterance", "unsafe_mode": False}}}))
+        settings, options, _ = provider._client()._options()
+        self.assertEqual(options["file_method"], "utterance")
+        self.assertFalse(options["unsafe_mode"])
+        self.assertEqual(settings.sources["tts.file_method"], "config")
+
+    def test_file_stream_readiness_checks_selected_interface_and_keeps_pcm_distinct(self):
+        from tests.test_tts_selection import RUNTIME, MISSING, READY
+        from yandex_speech.tts_capabilities import RuntimeCapabilities
+        provider = self.provider({"voice": "ermil", "yandex": {"file_method": "stream"}})
+        with patch("yandex_speech.tts_selection.probe_runtime", return_value=RUNTIME):
+            self.assertTrue(provider.is_available())
+        with patch("yandex_speech.tts_selection.probe_runtime",
+                   return_value=RuntimeCapabilities(READY, READY, READY, MISSING)):
+            self.assertFalse(provider.is_available())
+        voices = {voice["id"]: voice for voice in provider.list_voices()}
+        self.assertEqual(voices["alena"]["display"], "alena")
+
+    def test_native_receipt_exposes_actual_route_without_credentials_or_text(self):
+        provider = self.provider(fake_output=True)
+        client = provider._client()
+        client.last_synthesis = {"api_version": "3", "transport": "grpc", "method": "stream",
+            "voice": "ermil", "model": "general", "role": "good", "parts": 2,
+            "api_key": "private credential sentinel", "text": "private transcript sentinel"}
+        with patch.object(provider, "_client", return_value=client), self.assertLogs(
+                "integrations.hermes.tts_provider", level="INFO") as logs:
+            result = provider.synthesize("synthetic", self.home / "receipt.ogg", format="ogg")
+        message = logs.output[-1].split("Yandex native TTS receipt ", 1)[1]
+        record = json.loads(message)
+        self.assertEqual((record["api_version"], record["transport"], record["method"]), ("3", "grpc", "stream"))
+        self.assertEqual(record["parts"], 2)
+        self.assertEqual(record["output"], result)
+        self.assertEqual(record["input_characters"], len("synthetic"))
+        self.assertNotIn("sentinel", message)
+        self.assertNotIn("api_key", record)
+        self.assertGreaterEqual(record["elapsed_seconds"], 0)
+
+    def test_unsupported_native_file_format_is_not_silently_changed(self):
+        provider = self.provider(fake_output=True)
+        with patch.object(provider, "_client") as client:
+            with self.assertRaises(SpeechError) as caught:
+                provider.synthesize("Тест.", self.home / "unsupported.flac", format="flac")
+        self.assertEqual(caught.exception.category, "CONFIG")
+        client.assert_not_called()
+        self.assertFalse((self.home / "unsupported.wav").exists())
+
+    def test_native_selected_wav_rate_reaches_the_compatible_v1_request(self):
+        import wave
+        from types import SimpleNamespace
+        path = self.home / ".config/yandex-speech/config.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"speech": {"tts": {"sample_rate_hertz": 16000,
+            "default_format": "wav", "file_method": "utterance"}}}))
+        provider = self.provider({"voice": "ermil", "output_format": "wav"})
+        with patch("scripts.tts.requests.post", return_value=SimpleNamespace(
+                status_code=200, headers={"Content-Type": "audio/L16"}, content=b"\0\0" * 160)) as post:
+            output = provider.synthesize("Тест.", self.home / "rate.wav", format="wav")
+        with wave.open(output) as audio:
+            self.assertEqual(audio.getframerate(), 16000)
+        self.assertEqual(post.call_args.kwargs["data"]["sampleRateHertz"], "16000")
+
     def test_foreign_ambient_defaults_and_credentials_are_not_read(self):
         with patch.dict(os.environ, {"YANDEX_SPEECH_API_KEY": "foreign-synthetic",
                                     "HERMES_TTS_VOICE": "ermil",
@@ -403,9 +470,10 @@ class HermesTTSBindingTests(unittest.TestCase):
         self.assertNotEqual(result, str(output))
         self.assertEqual(output.read_bytes(), b"")
         self.assertEqual(Path(result).read_bytes(), b"synthetic adapter payload")
-        other = provider.synthesize("Текст.", str(self.home / "unsupported.flac"), format="flac")
-        self.assertTrue(other.endswith(".wav"))
-        self.assertEqual(self.clients[-1].recorded[1]["format"], "wav")
+        with self.assertRaises(SpeechError) as unsupported:
+            provider.synthesize("Текст.", str(self.home / "unsupported.flac"), format="flac")
+        self.assertEqual(unsupported.exception.category, "CONFIG")
+        self.assertEqual(self.clients[-1].recorded[1]["format"], "mp3")
 
     def test_nonempty_outputs_and_symlinks_are_preserved_before_requests(self):
         output = self.home / "speech.mp3"
@@ -530,8 +598,11 @@ class HermesTTSBindingTests(unittest.TestCase):
         self.assertTrue(all(path.read_bytes() == b"synthetic adapter payload" for path in results))
 
     def test_compatible_general_and_livetts_pcm_are_advertised(self):
+        from tests.test_tts_selection import RUNTIME
         for voice in ("ermil", "sergey"):
-            with self.subTest(voice=voice):
+            with self.subTest(voice=voice), patch(
+                    "yandex_speech.tts_capabilities.probe_runtime", return_value=RUNTIME), patch(
+                    "yandex_speech.tts_v3.grpc_sdk", return_value=(None, None, None)):
                 provider = self.provider({"voice": voice})
                 self.assertTrue(provider.is_available())
                 self.assertTrue(provider.streams_pcm)
