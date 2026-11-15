@@ -51,6 +51,42 @@ class SynthesisBoundaryTests(unittest.TestCase):
         self.assertTrue(v1_fits(text,options))
         self.assertFalse(v1_fits(text+"a",options))
 
+    def test_v1_exact_complete_form_matrix_preserves_cyrillic_markup_and_fields(self):
+        from types import SimpleNamespace
+        for fmt in ("oggopus", "lpcm", "wav"):
+            for text_format in ("plain", "ssml"):
+                kwargs = dict(api_version="1", transport="rest", voice="ermil", model="general",
+                    role="good", lang="ru-RU", speed=1.25, fmt=fmt, text_format=text_format)
+                if fmt in {"lpcm", "wav"}:
+                    kwargs["sample_rate"] = 16000
+                _, options, _ = self.client._options(**kwargs)
+                prefix, suffix = (('Привет & + "<>! ', '') if text_format == "plain" else
+                    ('<speak><p><sub alias="слово &amp; ещё">метка</sub></p><p>Привет &amp; ', '</p></speak>'))
+                base = len(urlencode(v1_form(prefix + suffix, options)).encode())
+                for size in (14999, 15000, 15001):
+                    remaining = size - base
+                    text = prefix + "я" * (remaining // 6) + "a" * (remaining % 6) + suffix
+                    with self.subTest(format=fmt, text_format=text_format, bytes=size):
+                        self.assertLess(len(text), 5000)
+                        payload = v1_form(text, options)
+                        self.assertEqual(len(urlencode(payload).encode()), size)
+                        expected = {"lang", "voice", "format", "speed", "emotion",
+                                    "ssml" if text_format == "ssml" else "text"}
+                        if fmt in {"lpcm", "wav"}:
+                            expected.add("sampleRateHertz")
+                        self.assertEqual(set(payload), expected)
+                        self.assertEqual(v1_fits(text, options), size <= 15000)
+                        with patch("scripts.tts.requests.post", return_value=SimpleNamespace(
+                                status_code=200, headers={"Content-Type": "audio/L16"},
+                                content=b"\0\0" * 16)) as post:
+                            if size <= 15000:
+                                self.client.synthesize_bytes(text, **kwargs)
+                                self.assertEqual(post.call_args.kwargs["data"], payload)
+                            else:
+                                with self.assertRaises(SpeechError):
+                                    self.client.synthesize_bytes(text, **kwargs)
+                                post.assert_not_called()
+
     def test_unsupported_nondefault_livetts_controls_are_not_dropped(self):
         for controls in [{"speed":2},{"pitch_shift":100},{"duration_ms":1000}]:
             with self.subTest(controls=controls),patch("scripts.tts.requests.post") as post:

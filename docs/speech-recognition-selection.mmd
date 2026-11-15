@@ -1,0 +1,119 @@
+---
+title: TO-BE - recognition input factors and one selected mechanism
+---
+flowchart LR
+    subgraph INPUTS["LEFT: input factors, each shown once"]
+        I["Audio arrival<br/>live / recorded"]
+        D["Audio duration and parts"]
+        C["Channels to preserve"]
+        B["Prepared bytes / wire size"]
+        F["Required transcript features"]
+        G["Installed gRPC<br/>stream / async"]
+        S["Source<br/>inline / URI / owned upload"]
+        Q["Background delay allowed?"]
+        K["Deferred client ready?"]
+        P["Objective<br/>cost / speed"]
+        L["Result-time estimates T_i"]
+        R["RUB rates<br/>sync: 0.1626 / 15 mono seconds<br/>async: 0.0101 / pair-second<br/>deferred: 0.00254 / pair-second"]
+    end
+
+    I -.-> VS
+    I -.-> ST
+    I -.-> V2
+    I -.-> R3
+    I -.-> G3
+    D -.-> VS
+    D -.-> ST
+    D -.-> V2
+    D -.-> R3
+    D -.-> G3
+    C -.-> VS
+    C -.-> ST
+    C -.-> V2
+    C -.-> R3
+    C -.-> G3
+    B -.-> VS
+    B -.-> ST
+    B -.-> V2
+    B -.-> R3
+    B -.-> G3
+    F -.-> VS
+    F -.-> ST
+    F -.-> V2
+    F -.-> R3
+    F -.-> G3
+    G -- "streaming ready: yes/no" --> ST
+    G -- "async ready: yes/no" --> G3
+    S -.-> V2
+    S -.-> R3
+    S -.-> G3
+    K -.-> V2
+    K -.-> R3
+    K -.-> G3
+    Q -.-> V2
+    Q -.-> R3
+    Q -.-> G3
+    P -.-> V2
+    P -.-> R3
+    P -.-> G3
+    R -.-> VS
+    R -.-> ST
+    R -.-> V2
+    R -.-> R3
+    R -.-> G3
+    L -.-> VS
+    L -.-> ST
+    L -.-> V2
+    L -.-> R3
+    L -.-> G3
+
+    VS["REST v1 synchronous<br/>recorded mono; compatible text-only result<br/>Csync = rounded 15-second parts<br/>Tsync = complete-result estimate"]
+    ST["gRPC v3 streaming<br/>ready stream stub; supported mono features<br/>Cstream = rounded mono sessions<br/>Tstream = requested usable result"]
+    V2["REST v2 asynchronous<br/>C2 = speech + S3 cost<br/>T2 = result-time estimate<br/>retain exact queue/source"]
+    R3["REST v3 asynchronous<br/>C3R = speech + source cost<br/>T3R = result-time estimate<br/>retain exact queue/source"]
+    G3["gRPC v3 asynchronous<br/>C3G = speech + source cost<br/>T3G = result-time estimate<br/>retain exact queue/source"]
+
+    P -- "Prepared: cost first" --> COST{"Minimum finite pair<br/>(total cost C, result time T)?"}
+    P -- "Conversation: speed first" --> SPEED{"Minimum finite pair<br/>(usable-result time T, total cost C)?"}
+    VS -.-> COST
+    ST -.-> COST
+    V2 -.-> COST
+    R3 -.-> COST
+    G3 -.-> COST
+    VS -.-> SPEED
+    ST -.-> SPEED
+    V2 -.-> SPEED
+    R3 -.-> SPEED
+    G3 -.-> SPEED
+
+    COST -- "sync wins" --> OSYNC
+    COST -- "stream wins" --> OSTREAM
+    COST -- "v2 async wins" --> OV2
+    COST -- "v3 REST async wins" --> OR3
+    COST -- "v3 gRPC async wins" --> OG3
+    COST -- "No eligible candidate" --> ERR
+    SPEED -- "sync wins" --> OSYNC
+    SPEED -- "stream wins" --> OSTREAM
+    SPEED -- "v2 async wins" --> OV2
+    SPEED -- "v3 REST async wins" --> OR3
+    SPEED -- "v3 gRPC async wins" --> OG3
+    SPEED -- "No eligible candidate" --> ERR
+
+    subgraph APIS["RIGHT: exactly one selected recognition mechanism"]
+        OSYNC["REST API v1<br/>Synchronous"]
+        OSTREAM["gRPC API v3<br/>Streaming"]
+        OV2["REST API v2<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        OR3["REST API v3<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        OG3["gRPC API v3<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        ERR["No technically valid mechanism"]
+    end
+    classDef factor fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef calculation fill:#fff8e1,stroke:#a67c00,color:#493600;
+    classDef decision fill:#e8eaf6,stroke:#3949ab,color:#152b4a;
+    classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
+    classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
+    class I,D,C,B,F,G,S,Q,K,P,L,R factor;
+    class VS,ST,V2,R3,G3 calculation;
+    class COST,SPEED decision;
+    class OSYNC,OSTREAM,OV2,OR3,OG3 api;
+    class ERR error;

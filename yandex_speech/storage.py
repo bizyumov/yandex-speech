@@ -26,7 +26,7 @@ _STATUSES = {"prepared", "uploading", "uploaded", "upload_uncertain", "failed",
              "deleting", "deleted", "cleanup_uncertain"}
 _FIELDS = {"schema_version", "kind", "upload_id", "status", "bucket", "endpoint", "key",
            "uri", "source_info", "source_sha256", "uploaded_sha256", "size_bytes",
-           "version_id", "etag", "retention", "error_code"}
+           "version_id", "etag", "retention", "error_code", "consumers", "abandoned"}
 
 
 def _coordinates(bucket, endpoint, prefix="speechkit"):
@@ -332,6 +332,28 @@ class ObjectStorageUploader:
             _remaining(deadline)
         return receipt
 
+
+    @staticmethod
+    def _released(job):
+        if job.status in {"completed", "no_speech"}:
+            return job.cached_result() is not None
+        return (job.data.get("provider_terminal") in {"failed", "cancelled"}
+                or not job.operation_id and (
+                    job.data.get("submission_rejected") is True
+                    or job.data.get("abandoned") is True))
+
+    def bind(self, upload, job):
+        """Register every consumer before a recognition request is submitted."""
+        receipt = UploadReceipt.load(upload.manifest_path)
+        if receipt.uri != job.source_ref or receipt.reference() not in job.owned_uploads:
+            raise SpeechError("STATE", "upload does not match the prepared recognition job")
+        with receipt.lock():
+            consumers = receipt.data.setdefault("consumers", [])
+            path = str(job.manifest_path)
+            if path not in consumers:
+                consumers.append(path)
+            receipt.save()
+
     def cleanup(self, upload, job, *, deadline_seconds=120):
         from .jobs import JobHandle
 
@@ -339,10 +361,16 @@ class ObjectStorageUploader:
         deadline = _deadline(deadline_seconds)
         with receipt.lock():
             verified = JobHandle.load(job.manifest_path if isinstance(job, JobHandle) else job)
-            if (verified.status not in {"completed", "no_speech"} or verified.cached_result() is None
+            if (not self._released(verified)
                     or receipt.reference() not in (verified.owned_uploads or [])
                     or verified.source_ref != receipt.uri):
-                raise SpeechError("STATE", "cleanup requires the matching completed job and durable saved result")
+                raise SpeechError("STATE", "cleanup requires a matching released job and durable completion or terminal evidence")
+            for path in receipt.data.get("consumers", []):
+                consumer = JobHandle.load(path)
+                if (receipt.reference() not in consumer.owned_uploads or consumer.source_ref != receipt.uri
+                        or not self._released(consumer)
+                        or consumer.job_id != verified.job_id and consumer.data.get("auto_cleanup") is False):
+                    raise SpeechError("STATE", "another recognition consumer still needs this upload", code="CONSUMER_ACTIVE")
             if receipt.status == "deleted":
                 return {"status": "deleted", "upload_id": receipt.upload_id}
             if receipt.status not in {"uploaded", "deleting", "cleanup_uncertain"}:
@@ -361,8 +389,7 @@ class ObjectStorageUploader:
                     raise
                 except Exception as exc:
                     error = _error(exc)
-                    if (receipt.status in {"deleting", "cleanup_uncertain"}
-                            and error.code in {"NoSuchKey", "NoSuchVersion", "404"}):
+                    if error.code in {"NoSuchKey", "NoSuchVersion", "404"}:
                         receipt.data["status"] = "deleted"
                         receipt.save()
                         return {"status": "deleted", "upload_id": receipt.upload_id}
@@ -374,10 +401,22 @@ class ObjectStorageUploader:
                     deleted = client.delete_object(Bucket=receipt.bucket, Key=receipt.key, VersionId=version)
                     if not 200 <= deleted.get("ResponseMetadata", {}).get("HTTPStatusCode", 0) < 300:
                         raise ValueError("no verified deletion receipt")
-                except Exception:
+                    _remaining(deadline)
+                    try:
+                        client.head_object(Bucket=receipt.bucket, Key=receipt.key, VersionId=version)
+                    except Exception as error:
+                        if _error(error).code not in {"NoSuchKey", "NoSuchVersion", "404"}:
+                            raise
+                    else:
+                        raise SpeechError("OUTPUT_PARTIAL", "owned object version still exists after deletion", code="DELETE_UNVERIFIED")
+                except Exception as error:
                     receipt.data["status"] = "cleanup_uncertain"
+                    failure = error if isinstance(error, SpeechError) else _error(error)
+                    receipt.data["error_code"] = failure.code
                     receipt.save()
-                    raise SpeechError("OUTPUT_PARTIAL", "owned version deletion outcome is uncertain; retain its receipt") from None
+                    if failure.category in {"PERMISSION", "AUTH", "RATE_LIMIT"}:
+                        raise failure from None
+                    raise SpeechError("OUTPUT_PARTIAL", "owned version deletion outcome is uncertain; retry its receipt", code=failure.code) from None
             receipt.data["status"] = "deleted"
             receipt.save()
             _remaining(deadline)

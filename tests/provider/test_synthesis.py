@@ -75,6 +75,9 @@ class LiveSynthesisTests(unittest.TestCase):
             long_output,api_version="3",transport="rest",model="livetts",voice="sergey",fmt="mp3")
         self.assertGreater(self.client.last_synthesis["parts"],1)
         self.assertEqual(self.probe(long_output)["format"]["format_name"],"mp3")
+        decoded = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror",
+            "-i", str(long_output), "-f", "null", "-"], capture_output=True, timeout=60)
+        self.assertEqual(decoded.returncode, 0, "complete multipart MP3 must fully decode")
         self.proof({"ssml_cli_exit":run.returncode,"multipart":self.client.last_synthesis})
 
     def test_progressive_audio_precedes_input_eof(self):

@@ -10,6 +10,33 @@ Choose the requested voice and pronunciation first, then select a compatible API
 
 API v3 does not mean LiveTTS. General and LiveTTS voices belong to separate model families. Preserve the user's literal voice/model/role choices.
 
+## Complete-file methods and limits
+
+Use Python `file_method="utterance"` / `"stream"`, or CLI `--file-method utterance` / `stream`, when choosing the producer explicitly. Both return one completed file. CLI `--stream` instead selects the existing progressive 24 kHz PCM interface; it does not create an encoded complete file or a Discord player.
+
+| Producer | Admission per provider request |
+|---|---|
+| REST v1 | At most 5,000 Unicode characters and 15,000 bytes for the complete URL-encoded form, including all parameters. Cyrillic and escaped markup can reach the byte budget before 5,000 characters. |
+| Normal v3 utterance, REST or gRPC | At most 250 characters, plus the independent 24-second speech limit. |
+| Explicit unsafe v3 utterance | At most 5,000 characters; enable only with `unsafe_mode=true` / `--unsafe-mode`. |
+| gRPC v3 streamed file | Client policy: at most 5,000 characters per RPC. Longer SDK input uses ordered RPCs and complete-file assembly. This is a client aggregate bound, not a separately measured hard service-session limit. |
+
+SSML selects compatible REST v1. A fixed API, transport or method remains fixed; unsupported voice/control combinations fail without substitution. Unsafe false excludes unsafe utterance behavior and still permits streaming.
+
+Complete-file synthesis defaults to `file_method=auto`. It filters complete ready operations before ranking gRPC streamed file, gRPC utterance, REST v3 utterance, then compatible REST v1. Eligibility includes the selected voice/controls, actual installed interfaces, partitions and required output assembly. A compatible voice can therefore use v3; its v1 support does not force v1.
+
+With no usable gRPC interface, eligible REST operations remain available. Normal v3 utterance may require several 250-character requests and an encoded joiner; a compatible v1 operation that fits one response can win when those complete v3 operations are unavailable. Unsafe mode is used only when explicitly requested. Explicit API/transport/method choices remain constraints, and no paid or uncertain operation is replayed to obtain another route.
+
+Local readiness uses the same saved-control validation as synthesis, including requested WAV sample rates. A selected local route and present key do not verify IAM permission, provider execution, addressed delivery or hearing.
+
+The base HTTP runtime includes requests. gRPC additionally needs its runtime, protobuf parser and usable packaged message/stub interfaces. The proto compiler alone is not a runtime requirement when those interfaces already work. Missing optional gRPC leaves eligible REST methods available; synthesis never installs dependencies.
+
+One verified provider container needs no local encoder or joiner merely to save transport fragments. Independent Ogg/MP3 outputs need usable FFmpeg concat/input-demuxer/output-muxer support. WAV/LPCM assembly uses the standard library. An explicit WAV sample rate selects a compatible v1 route; v3 container WAV chooses its own rate, while v3 LPCM accepts an explicit sample rate. No route silently changes the requested format.
+
+The complete operation has a 256 MiB audio budget. A limit, failed middle part, malformed container or expired deadline does not publish a prefix as complete. Owned accepted parts and useful failure evidence are retained. A proved connection failure before the first synthesis RPC can exclude a transport in automatic mode; submitted or uncertain work is not automatically replayed through another method. A definite normal-v3 duration rejection permits bounded same-method partitioning.
+
+V1 accounting uses submitted characters. V3 unsafe/streaming accounting uses 250-character blocks, not one unit per RPC. Diagnostics separate submitted attempts (including duration rejections) from output parts. Calculated units are not an invoice reconciliation. See [request limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits), [v1 form contract](https://aistudio.yandex.ru/en/docs/speechkit/tts/request), [StreamSynthesis](https://aistudio.yandex.ru/en/docs/speechkit/tts-v3/api-ref/grpc/Synthesizer/streamSynthesis) and [billing](https://aistudio.yandex.ru/en/docs/speechkit/pricing).
+
 ## REST v1 with SSML
 
 Set `YS` once to the installed skill directory (replace `<path-to-skill>` in the command below) and reuse it in the examples.
@@ -103,7 +130,7 @@ Verified against the official catalog on 2026-11-09 (34 current voices; implemen
 
 The official catalog marks Marina as its default. **Alena is available through both API v1 and API v3:** live provider requests on 2026-11-12 using `voice=alena` and neutral style returned HTTP 200 and decodable MP3 audio from both APIs (30,573 bytes; 3.816 seconds each). Invalid-voice controls were rejected, and a v3 Ermil control succeeded. Alena is absent from the current published voice catalog, so it is identified separately from that table.
 
-The installed library currently restricts Alena to API v1. This is a client-side classification error, not evidence of a provider limitation; do not describe Alena as v1-only or merely retained for legacy compatibility. The voice/API routing specification must account for the live v1/v3 result before that library restriction is changed. Preserve explicit saved preferences rather than silently substituting Marina or another voice.
+The library permits Alena through v1 and v3. Neutral/general streaming output was also checked on 2026-11-13 in Ogg/Opus, MP3, WAV and LPCM. This is provider/interface evidence; native delivery and perceived quality require their own checks. Preserve explicit saved preferences rather than silently substituting Marina or another voice.
 
 ### Keep the catalog current
 
@@ -111,7 +138,7 @@ This table is the voice list; sample clips are optional previews. Its API availa
 
 Before listing available voices or choosing an unfamiliar voice, check the current [official voice catalog](https://aistudio.yandex.ru/en/docs/speechkit/tts/voices). Recheck before every release and when the provider rejects a previously supported combination. Verify the whole catalog, including v1 versus v3 availability, general versus LiveTTS, roles/default roles and language; do not infer availability from a few successful audio requests.
 
-When the official catalog changes, update this complete table and `yandex_speech/tts_voices.py` together, record the verification date, and run `python -m unittest tests.test_voice_catalog tests.test_tts_routing`. Preserve separately labeled legacy choices. These tests check consistency between the installed list and routing; they do not fetch the upstream catalog or prove that it has not changed.
+When the official catalog changes, update this complete table and `yandex_speech/tts_voices.py` together, record the verification date, and run `python -m unittest tests.test_voice_catalog tests.test_tts_routing`. Preserve separately identified, verified choices absent from the published catalog. These tests check consistency between the installed list and routing; they do not fetch the upstream catalog or prove that it has not changed.
 
 If the official source cannot be checked, give the last verification date and say that current availability is unverified. Never silently substitute a different voice, API, family or role. Generate a short preview through the existing speech interface only when requested; there is no mandatory sample pack or catalog listening step.
 

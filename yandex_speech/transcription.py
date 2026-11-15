@@ -1,6 +1,7 @@
 """Phase 1 gRPC v3 orchestration with explicit legacy-route boundaries."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import math
 import os
@@ -85,6 +86,37 @@ class SpeechTranscriber:
         return ObjectStorageUploader(bucket=bucket, endpoint=endpoint, prefix=prefix,
             job_dir=self.job_dir.parent / "uploads", _context=self.context,
             _adapter_defaults=self.adapter_defaults, _environment=self._environment)
+
+    def _cleanup_job(self, job, result=None):
+        """Dispose only this job's owned uploads; keep saved results usable."""
+        from .storage import ObjectStorageUploader
+        if not job.owned_uploads:
+            return result
+        uploads = []
+        enabled = job.data.get("auto_cleanup", self.settings.value("object_storage.auto_cleanup", True))
+        for reference in job.owned_uploads:
+            item = {"upload_id": reference.get("upload_id")}
+            if not enabled:
+                item.update(status="retained", reason="automatic cleanup explicitly disabled")
+            elif not ObjectStorageUploader._released(job):
+                item.update(status="retained", reason="accepted or uncertain work still needs its input")
+            else:
+                try:
+                    uploader = self._storage_uploader(bucket=reference["bucket"], endpoint=reference["endpoint"])
+                    disposed = uploader.cleanup(Path(reference["manifest_path"]), job)
+                    item.update(status=disposed["status"])
+                except SpeechError as error:
+                    item.update(status="retained" if error.code == "CONSUMER_ACTIVE" else "pending", reason=error.category, code=error.code)
+                except Exception:
+                    item.update(status="pending", reason="cleanup failed; retry this saved job")
+            uploads.append(item)
+        status = ("pending" if any(item["status"] == "pending" for item in uploads)
+                  else "deleted" if all(item["status"] == "deleted" for item in uploads) else "retained")
+        job.data["cleanup"] = {"status": status, "uploads": uploads}
+        job.save()
+        if result is not None:
+            return dict(result, cleanup=copy.deepcopy(job.data["cleanup"]))
+        return copy.deepcopy(job.data["cleanup"])
 
     def _file_preflight(self):
         """Check configured file prerequisites without media or provider requests."""
@@ -230,6 +262,7 @@ class SpeechTranscriber:
         if not _OPERATIONS.acquire(blocking=False):
             raise SpeechError("RATE_LIMIT", "two local speech operations are already active")
         rpc, job, inline = None, None, False
+        leases = contextlib.ExitStack()
         try:
             params = {"language": settings.value("language_code"),
                       "diarize": settings.value("enable_diarization"),
@@ -277,10 +310,14 @@ class SpeechTranscriber:
                     request = builder(prepared, **request_options)
             job = JobHandle.create(self.job_dir, info, parameters=params, deadline_at=deadline,
                                    api_version=version, transport=actual)
+            leases.enter_context(job.lock())
             job.data["routing"] = {"requested_transport": settings.value("transport"), "reasons": reasons}
+            job.data["auto_cleanup"] = settings.value("object_storage.auto_cleanup", True)
             if isinstance(source, UploadReceipt):
                 job.data["owned_uploads"] = [source.reference()]
             job.save()
+            if isinstance(source, UploadReceipt):
+                self._storage_uploader(bucket=source.bucket, endpoint=source.data["endpoint"]).bind(source, job)
             if _on_prepared is not None:
                 _on_prepared(job)
             try:
@@ -294,10 +331,12 @@ class SpeechTranscriber:
             try:
                 receipt = operation_dict(rpc.recognize_file(request, self._remaining(deadline)))
             except SpeechError as error:
+                job.data["submission_rejected"] = error.category in {"AUTH", "PERMISSION", "CONFIG"} or error.code == "FAILED_PRECONDITION"
                 job.set_status("submission_uncertain" if error.category == "SUBMISSION_UNCERTAIN" else "failed")
                 raise
             except Exception as error:
                 failure = rpc_error(error, submitting=True)
+                job.data["submission_rejected"] = failure.category != "SUBMISSION_UNCERTAIN"
                 job.set_status("submission_uncertain" if failure.category == "SUBMISSION_UNCERTAIN" else "failed")
                 raise failure from None
             operation_id = receipt.get("id")
@@ -312,13 +351,18 @@ class SpeechTranscriber:
             return job
         except SpeechError as error:
             if job is not None:
+                if job.status == "prepared":
+                    job.data["abandoned"] = True
+                    job.set_status("failed")
                 error.receipt_path = str(job.manifest_path)
+                error.cleanup = self._cleanup_job(job)
             elif isinstance(source, UploadReceipt):
                 error.receipt_path = str(source.manifest_path)
             raise
         finally:
             if job is not None:
                 self._release_rpc(job, rpc)
+            leases.close()
             if inline:
                 _INLINE.release()
             _OPERATIONS.release()
@@ -364,7 +408,7 @@ class SpeechTranscriber:
             with job.lock():
                 cached = job.cached_result()
                 if cached is not None:
-                    return cached
+                    return self._cleanup_job(job, cached)
                 policy = self._options(transport=transport).value("transport")
                 if policy == "auto" and job.data["transport"] == "rest":
                     policy = "rest"
@@ -374,6 +418,8 @@ class SpeechTranscriber:
                     operation = operation_dict(self._retry(
                         lambda timeout: rpc.get_operation(job.operation_id, timeout), job, deadline))
                     if operation.get("error"):
+                        if operation.get("done") is True:
+                            job.data["provider_terminal"] = "failed"
                         job.data["parts"][0]["status"] = "failed"
                         job.set_status("failed")
                         code = operation["error"].get("code")
@@ -418,11 +464,12 @@ class SpeechTranscriber:
                 result.update(operation_id=job.operation_id, job_id=job.job_id,
                               job_manifest_path=str(job.manifest_path),
                               routing=copy.deepcopy(job.data.get("routing", {})))
-                return job.store_result(result)
+                return self._cleanup_job(job, job.store_result(result))
         except SpeechError as error:
             if error.category in {"CANCELLED", "TIMEOUT"}:
                 job.set_status("cancelled" if error.category == "CANCELLED" else "failed")
             error.receipt_path = str(job.manifest_path)
+            error.cleanup = self._cleanup_job(job)
             raise
         finally:
             self._release_rpc(job, rpc)

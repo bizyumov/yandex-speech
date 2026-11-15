@@ -54,4 +54,4 @@ class VoiceCatalogTests(unittest.TestCase):
         self.assertEqual(CATALOG["ermil"]["roles"], {"neutral", "good"})
         self.assertNotIn("friendly", CATALOG["ermil"]["roles"])
         self.assertIn("friendly", CATALOG["marina"]["roles"])
-        self.assertEqual(CATALOG["alena"]["versions"], {"1"})
+        self.assertEqual(CATALOG["alena"]["versions"], {"1", "3"})

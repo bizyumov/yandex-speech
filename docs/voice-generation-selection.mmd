@@ -1,0 +1,110 @@
+---
+title: TO-BE - generation input factors and one selected mechanism
+---
+flowchart LR
+    subgraph INPUTS["LEFT: input factors, each shown once"]
+        V["Voice profile<br/>v1 / v3 / both"]
+        N["Text payload<br/>N chars / v1 encoded bytes"]
+        G["Installed gRPC<br/>utterance / stream"]
+        M["Markup<br/>plain / native / SSML"]
+        O["Delivery<br/>file / progressive PCM"]
+        A["Format and assembly tools"]
+        X["Explicit API / method flags"]
+        P["Objective<br/>cost / speed"]
+        L["Latency estimates T_i"]
+        R["RUB rates<br/>v1: 1342 / million chars<br/>v3: 0.1626 general / 0.25 livetts"]
+    end
+
+    N -- "At most 250" --> NS["At most 250<br/>normal v3: one part<br/>stream: one part"]
+    N -- "251 to 5000" --> NM["251 to 5000<br/>normal v3: 250-char parts<br/>stream: one 5000-char part"]
+    N -- "More than 5000" --> NL["More than 5000<br/>valid parts per method<br/>include required assembly"]
+
+    V -- "v1 support bit" --> S1
+    V -- "v3 support bit" --> V3BIT(("v3"))
+    V3BIT --> SR
+    V3BIT --> SU
+    V3BIT --> SS
+    G -- "utterance ready: yes/no" --> SU
+    G -- "stream ready: yes/no" --> SS
+    M -.-> S1
+    M -.-> SR
+    M -.-> SU
+    M -.-> SS
+    O -.-> S1
+    O -.-> SR
+    O -.-> SU
+    O -.-> SS
+    A -.-> S1
+    A -.-> SR
+    A -.-> SU
+    A -.-> SS
+    X -.-> S1
+    X -.-> SR
+    X -.-> SU
+    X -.-> SS
+
+    NS -.-> S1
+    NS -.-> SR
+    NS -.-> SU
+    NS -.-> SS
+    NM -.-> S1
+    NM -.-> SR
+    NM -.-> SU
+    NM -.-> SS
+    NL -.-> S1
+    NL -.-> SR
+    NL -.-> SU
+    NL -.-> SS
+    R -.-> S1
+    R -.-> SR
+    R -.-> SU
+    R -.-> SS
+    L -.-> S1
+    L -.-> SR
+    L -.-> SU
+    L -.-> SS
+
+    S1["REST v1<br/>v1 voice; file; SSML/plain allowed<br/>C1 = r1 x submitted chars<br/>T1 = file-ready estimate"]
+    SR["REST v3 utterance<br/>v3 voice; plain/native file<br/>C3R = r3 x billed blocks<br/>T3R = file-ready estimate"]
+    SU["gRPC v3 utterance<br/>v3 voice; utterance stub; plain/native file<br/>C3U = r3 x billed blocks<br/>T3U = file-ready estimate"]
+    SS["gRPC v3 streaming<br/>v3 voice; stream stub; compatible controls<br/>C3S = r3 x billed blocks<br/>T3S = file-ready / first PCM"]
+
+    P -- "Prepared: cost first" --> COST{"Minimum finite pair<br/>(total cost C, delivery time T)?"}
+    P -- "Conversation: speed first" --> SPEED{"Minimum finite pair<br/>(delivery time T, total cost C)?"}
+    S1 -.-> COST
+    SR -.-> COST
+    SU -.-> COST
+    SS -.-> COST
+    S1 -.-> SPEED
+    SR -.-> SPEED
+    SU -.-> SPEED
+    SS -.-> SPEED
+
+    COST -- "v1 wins" --> R1
+    COST -- "REST v3 wins" --> R3
+    COST -- "gRPC utterance wins" --> GU
+    COST -- "gRPC stream wins" --> GS
+    COST -- "No eligible candidate" --> ERR
+    SPEED -- "v1 wins" --> R1
+    SPEED -- "REST v3 wins" --> R3
+    SPEED -- "gRPC utterance wins" --> GU
+    SPEED -- "gRPC stream wins" --> GS
+    SPEED -- "No eligible candidate" --> ERR
+
+    subgraph APIS["RIGHT: exactly one selected generation mechanism"]
+        R1["REST API v1"]
+        R3["REST API v3<br/>UtteranceSynthesis"]
+        GU["gRPC API v3<br/>UtteranceSynthesis"]
+        GS["gRPC API v3<br/>StreamSynthesis"]
+        ERR["No technically valid mechanism"]
+    end
+    classDef factor fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef calculation fill:#fff8e1,stroke:#a67c00,color:#493600;
+    classDef decision fill:#e8eaf6,stroke:#3949ab,color:#152b4a;
+    classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
+    classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
+    class V,N,G,M,O,A,X,P,L,R factor;
+    class NS,NM,NL,S1,SR,SU,SS calculation;
+    class COST,SPEED decision;
+    class R1,R3,GU,GS api;
+    class ERR error;
