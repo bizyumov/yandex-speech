@@ -1,0 +1,73 @@
+---
+title: TO-BE - choose speech recognition by cost or response speed
+---
+flowchart LR
+    LIVE{"Audio arriving during a conversation?"}
+    LIVE -- Yes --> SLIB{"v3 gRPC streaming interface installed?"}
+    SLIB -- No --> ERR
+    SLIB -- Yes --> SFEATURES{"Streaming preserves the required language, channels and result features?"}
+    SFEATURES -- Yes --> STREAM
+    SFEATURES -- No --> ERR
+
+    LIVE -- "No: recorded input" --> SIZE{"Prepared source admission?"}
+    SIZE -- "Within sync size/duration limits" --> GSHORT{"Required gRPC interfaces installed?"}
+    SIZE -- "Beyond sync; whole async inline fits" --> GINLINE{"Required gRPC interfaces installed?"}
+    SIZE -- "S3 URI or partitioning required" --> GLARGE{"Required gRPC interfaces installed?"}
+    GSHORT -- Yes --> GYES
+    GINLINE -- Yes --> GYES
+    GLARGE -- Yes --> GYES
+    GSHORT -- No --> GNO
+    GINLINE -- No --> GNO
+    GLARGE -- No --> GNO
+
+    GYES{"Optimization purpose?<br/>Include only ready methods"}
+    GNO{"Optimization purpose?<br/>gRPC candidates are excluded"}
+    GYES -- "Conversation: speed first" --> FAST
+    GNO -- "Conversation: speed first" --> FAST
+    GYES -- "Prepared transcript: cost first" --> DELAY
+    GNO -- "Prepared transcript: cost first" --> DELAY
+
+    DELAY{"Low-priority processing delay acceptable?"}
+    DELAY -- No --> CHEAP
+    DELAY -- Yes --> DFEATURE{"Deferred model supports every required feature?"}
+    DFEATURE -- No --> CHEAP
+    DFEATURE -- Yes --> DCLIENT{"Deferred client path implemented and ready?"}
+    DCLIENT -- "Yes: include deferred candidates" --> CHEAP
+    DCLIENT -- "No: exclude deferred candidates" --> CHEAP
+
+    FAST{"Lowest estimated complete-result time<br/>among ready normal-priority methods?<br/>Tie: lower total cost"}
+    FAST -- "Synchronous v1 wins" --> SYNC
+    FAST -- "Buffered/live v3 streaming wins" --> STREAM
+    FAST -- "Normal v3 gRPC async wins" --> GASYNC
+    FAST -- "Normal v3 REST async wins" --> RASYNC
+    FAST -- "Normal v2 REST async wins" --> V2
+    FAST -- "No complete candidate" --> ERR
+
+    CHEAP{"Lowest finite total cost?<br/>Speech units + storage/requests/transfer<br/>Include rounding, overlap and partitions<br/>Tie: lower estimated completion time"}
+    CHEAP -- "Synchronous v1 wins" --> SYNC
+    CHEAP -- "v3 streaming wins" --> STREAM
+    CHEAP -- "Normal v3 gRPC wins" --> GASYNC
+    CHEAP -- "Normal v3 REST wins" --> RASYNC
+    CHEAP -- "Normal v2 REST wins" --> V2
+    CHEAP -- "Deferred v3 gRPC wins" --> GDEFER
+    CHEAP -- "Deferred v3 REST wins" --> RDEFER
+    CHEAP -- "Deferred v2 REST wins" --> V2DEFER
+    CHEAP -- "No complete candidate" --> ERR
+
+    subgraph APIS["One selected recognition mechanism"]
+        SYNC["REST API v1<br/>Synchronous recognition"]
+        STREAM["gRPC API v3<br/>Streaming recognition"]
+        GASYNC["gRPC API v3<br/>Normal asynchronous recognition"]
+        RASYNC["REST API v3<br/>Normal asynchronous recognition"]
+        V2["REST API v2 + S3<br/>Normal asynchronous recognition"]
+        GDEFER["gRPC API v3<br/>Deferred-general asynchronous recognition"]
+        RDEFER["REST API v3<br/>Deferred-general asynchronous recognition"]
+        V2DEFER["REST API v2 + S3<br/>Deferred-general asynchronous recognition"]
+        ERR["No technically valid complete mechanism<br/>Explain the missing requirement"]
+    end
+    classDef decision fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
+    classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
+    class LIVE,SLIB,SFEATURES,SIZE,GSHORT,GINLINE,GLARGE,GYES,GNO,DELAY,DFEATURE,DCLIENT,FAST,CHEAP decision;
+    class SYNC,STREAM,GASYNC,RASYNC,V2,GDEFER,RDEFER,V2DEFER api;
+    class ERR error;

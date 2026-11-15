@@ -1,215 +1,225 @@
-# Spec: deterministic voice-generation selection (#83)
+# Spec: speech-generation selection by cost or response speed (#83)
 
-**Status: Specify — proposed algorithm for operator review, 2026-11-15.**
-This is the complete review projection of the revised #83 selection contract.
-The operator retired the 65-case plan and specified three live generation tests.
+**Status: Specify — TO-BE, business requirements and evidence model, 2026-11-15.**
+This replaces the earlier fixed protocol preference. It does not describe deployed
+selection behavior or approve routing activation.
 
 ## Objective
 
-Select one executable voice-generation operation that preserves the requested
-voice, model, role, pronunciation and output. Ordinary short replies use simple
-REST v3 when compatible. Longer replies use v3 streaming when available, with
-explicit fallbacks when optional dependencies are absent.
+Choose the technically valid complete generation operation that best serves the
+request's business purpose. **Cost and speed are optimization objectives.**
+The selected voice, model, role, pronunciation, quality and output are constraints.
 
-This revises #83's selection policy. The current code's unconditional gRPC-first
-ranking is the baseline being replaced, not the proposed behavior. The policy
-below is a single proposed algorithm for review; routing code is not changed by
-publishing it.
+The operator's instructions, translated into English and incorporated here, are:
 
-| Decision factor | Effect |
-|---|---|
-| Selected voice/model/role and required pronunciation controls | Keep only routes that support those exact choices. Never change the voice to obtain another route. |
-| Plain/native markup or XML SSML | SSML requires a compatible REST v1 route. Native stress/pronunciation marks alone do not force v1. |
-| Completed file or progressive speech | Progressive speech requires a compatible gRPC v3 stream and the stock PCM sink. Completed files can use any eligible file producer. |
-| Explicit API, transport, file method and unsafe mode | These constrain the candidate set. Contradictory choices produce an error. Unsafe mode is never enabled implicitly. |
-| Text character count and complete v1 encoded form size | Determine request partitions. The v1 byte budget includes every form parameter. |
-| Installed gRPC runtime, protobuf and method stubs | Missing streaming or utterance libraries takes the corresponding No branch. The baseline HTTP runtime is not an API-selection factor. |
-| Requested format/rate and required output assembly | Exclude routes that cannot complete that output with available tools before sending paid work. |
+- Produce two simple trees: generation first, recognition second. Separate input
+  factors branch on the left; one selected mechanism is the output on the right.
+  Think of input pins on a circuit selecting one output, rather than a box listing
+  every possible mechanism.
+- For conversation, prioritize response speed and convenience. Discord speech
+  and conversational Telegram voice messages are examples.
+- For voicing an already written message or preparing audio outside an immediate
+  conversation, prioritize cost. The platform name alone does not decide the goal.
+- Choose the cheapest eligible complete operation for the cost goal. For speed,
+  choose the best estimated usable-output time within the request's constraints.
+  Research actual charging rules and billing evidence rather than imposing an API
+  version preference or using RPC count as a price.
+- Translate subsequent clarifications into project documents. Preserve the
+  selected voice/result and technical constraints. Exactly three live generation
+  cases remain; the retired 65-case expansion must not resume.
 
-| Possible outcome | Contract |
-|---|---|
-| REST v3 UtteranceSynthesis | Normal requests: at most 250 characters and the independent 24-second limit; explicit unsafe mode: up to 5,000 characters. Complete file. |
-| gRPC v3 UtteranceSynthesis | Same normal/explicit-unsafe admission; used when the remaining explicit constraints/readiness select it. Complete file. |
-| gRPC v3 StreamSynthesis | Progressive PCM, or complete-file collection. Up to 5,000 characters per planned provider request in this client. |
-| REST v1 | Compatible voice and controls, including SSML; at most 5,000 characters and the client's 15,000-byte complete URL-encoded form budget. Complete file. |
-| Actionable error | No compatible complete route, missing dependency/assembler/sink, or contradictory selections. No paid first-part experiment. |
+Use these two ordered scores; no arbitrary weighting constants are introduced:
 
-Precedence is deterministic:
+| Purpose | Primary objective | Secondary objective |
+|---|---|---|
+| Prepared / non-interactive audio | Lowest expected total charge C | Lower estimated usable-output time T |
+| Conversation | Lowest estimated usable-output time T | Lower expected total charge C |
 
-1. Apply explicit choices and voice/control/output compatibility. A priority never
-   overrides these constraints.
-2. Establish the complete operation for every remaining route: partitions, required
-   assembly and actual interfaces. Remove operations that cannot finish.
-3. For progressive speech, select the sole compatible v3 gRPC stream/sink contract.
-4. For a file, take the **first remaining route** in the applicable order:
+Prepared output is a complete audio file. Its internal producer may use a
+streaming RPC without turning the task into progressive conversation. Explicit
+method restrictions still remain binding.
 
-| File request | Ordered preference |
-|---|---|
-| Normal, at most 250 characters | **REST v3 utterance → gRPC v3 utterance → gRPC v3 stream → REST v1** |
-| Normal, more than 250 characters | **gRPC v3 stream → REST v1 → REST v3 utterance → gRPC v3 utterance** |
-| Explicit unsafe mode | **REST v3 unsafe utterance → gRPC v3 unsafe utterance**; other methods are excluded |
-| SSML | Compatible **REST v1 only** |
+Any explicit budget, deadline or mechanism selection is a hard constraint.
+An ineligible producer has no finite score and cannot win. Exact ties prefer less
+conversion/assembly/startup work, then a stable identifier for determinism.
 
-Thus v1 compatibility alone never pushes a short reply onto v1. For longer plain
-text, v1 is the fallback when the preferred v3 stream cannot complete the operation
-and the selected voice/controls permit v1: it avoids ordinary v3's 250-character
-partitioning. If v1 is also ineligible, normal v3 uses ordered 250-character parts.
-An explicit API v3 choice excludes that v1 fallback.
-The provider warns of possible quality degradation with unsafe mode in its
-[v3 request contract](https://aistudio.yandex.ru/en/docs/speechkit/tts-v3/api-ref/Synthesizer/utteranceSynthesis),
-so unsafe mode remains explicit opt-in.
+For each complete eligible operation, calculate its actual planned parts, C and T.
+Choose the minimum (C, T) for prepared audio, or (T, C) for conversation. There is
+no universal v1-first, v3-first, REST-first or gRPC-first policy.
 
-Count the actual selector input after formatting. Record the whole logical reply
-and any Hermes outer chunks separately; undisclosed text is not a selector input.
+Inputs include the actual formatted text and native outer chunks; fixed selected
+voice/model/role; SSML/native markup; file or progressive PCM contract; installed
+method interfaces; required assembly/conversion; explicit unsafe permission;
+applicable price book; and comparable latency evidence.
 
-Text above 5,000 characters is partitioned for the selected route and assembled
-into the requested complete file. V1 may require partitioning earlier because of
-its encoded-byte budget. Independent MP3/Ogg outputs require an available encoded
-joiner; WAV/LPCM assembly uses the existing standard-library path. One complete
-provider container requires no joiner just to save it. Selection checks these
-requirements before the first paid request.
+Public RUB price snapshot, including VAT, retrieved 2026-11-15:
 
-[Open the full-size decision tree (SVG)](voice-generation-selection.svg) · [Mermaid source](voice-generation-selection.mmd)
+| Model / API | Price input |
+|---|---:|
+| API v1 | RUB 1,342 per million submitted characters |
+| API v3 general | RUB 0.1626 per billable text block |
+| API v3 livetts | RUB 0.25 per billable text block |
+
+The [provider pricing rules](https://aistudio.yandex.ru/ru/docs/speechkit/pricing)
+define v3's 250-character accounting. Compute units for each submitted part;
+normal utterance requests each consume a unit, while long/streamed work is
+estimated from rounded 250-character blocks. Do not equate one long RPC with
+one charged unit. Keep exact-boundary/flush-granularity uncertainty visible until
+reconciled against metering; it is not permission for extra paid experiments.
+
+For v1, estimate C1 = 1342 × sum(actual submitted characters) / 1,000,000.
+For v3, estimate C3 = selected model rate × sum(billable blocks of actual parts).
+URL-encoded bytes constrain v1 admission; they are not the character-price unit.
+Outer chunking, markup wrappers, overlaps/retries and forced flush boundaries
+must not disappear from the estimate.
+
+For the same general voice eligible for both APIs, a 100-character prepared
+request costs an estimated RUB 0.1342 through v1 versus RUB 0.1626 through normal
+v3. At 200 characters the figures are RUB 0.2684 and RUB 0.1626. Thus the
+cheapest API can change within the short band; the normal single-unit crossover
+is between 121 and 122 characters at these rates. This is a calculated example
+using public tariffs, not a per-request invoice measurement.
+
+At 1,000 characters, one v3 operation with four billing blocks estimates to RUB
+0.6504, while five separately billed normal parts cost RUB 0.813. Actual planned
+part lengths determine the answer. API v1 at 1,000 submitted characters estimates
+to RUB 1.342. No voice/model change is allowed to obtain those comparisons.
+
+T is specific to delivery: complete deliverable-file time for Telegram/file
+messages; first usable PCM at the host sink for speaking. Include startup,
+required conversion, assembly and delivery work. A provider fragment timestamp
+is not a listener/playback timestamp, and LLM/admission delay is not a synthesis
+mechanism measurement.
+
+Existing matched One-ring tool receipts for a synthetic 1,000-character
+Ermil/general/good Ogg reply recorded file-ready times of about 8.42 s for v1,
+3.02 s for normal REST v3 and 1.40 s for gRPC v3 streamed-file output.
+These are historical individual observations, not universal guarantees or
+commissioning of the revised selector. Their detailed source references remain
+private. Use producer, normal/unsafe mode, voice/model/role, requested controls, format,
+size, outer-chunk policy and startup-matched profiles; identify
+inferred or missing estimates. Unknown latency is never represented as zero.
+Use the latency comparison when comparable estimates exist for every candidate
+being compared. Otherwise use a declared structural fallback for that comparison:
+fewer sequential provider RPCs, then fewer conversion passes, fewer assembly
+passes, lower expected charge and a stable mechanism identifier. Mark the result
+speed-unverified; RPC count is only this fallback latency proxy, never a tariff.
+For cost ties use comparable latency, or the same declared fallback when missing.
+Collect telemetry from ordinary work; launch no paid exploration and advertise
+no proven fastest route from the fallback.
+
+Normal v3 utterance is limited to 250 characters and 24 seconds; unsafe and
+streamed-file requests admit up to 5,000 in the current client. V1 enforces
+5,000 characters and a 15,000-byte complete encoded-form budget. Longer input
+requires complete assembly. Actual per-method controls and framing are checked
+before paid work; installed gRPC packages alone do not prove a ready collector.
+Unsafe remains explicit because its quality trade-off must not be introduced
+by the cost optimizer. [Limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits).
+
+In the diagram, C1/T1 describe REST v1, C3R/T3R REST v3 utterance,
+C3U/T3U gRPC v3 utterance, and C3S/T3S gRPC v3 streaming.
+Each pair is a complete-operation estimate after hard eligibility checks.
+An unsupported interface, voice, control, output or missing assembler removes
+that candidate; a speed estimate also carries its evidence/confidence.
+The gRPC question enables only individually verified method interfaces.
+
+[Open generation tree (SVG)](voice-generation-selection.svg) ·
+[Mermaid source](voice-generation-selection.mmd)
 
 ```mermaid
+---
+title: TO-BE - choose speech generation by cost or response speed
+---
 flowchart LR
-    MODE{"Automatic selection:<br/>requested output / input?"}
-    MODE -- "Audio file: plain or native markup" --> UNSAFE{"unsafe mode explicitly enabled?"}
-    MODE -- "Audio file: XML SSML" --> XMLVOICE{"Selected voice and controls support v1 SSML?"}
-    MODE -- "Speak as audio is generated" --> PLIB{"gRPC streaming libraries installed?"}
+    N{"Formatted message length?"}
+    N -- "At most 250 characters" --> VS{"APIs permitted by the chosen voice and required features?"}
+    N -- "251 to 5000 characters" --> VM{"APIs permitted by the chosen voice and required features?"}
+    N -- "More than 5000 characters" --> VL{"APIs permitted by the chosen voice and required features?"}
+    VS -- "v1 only" --> R1READY
+    VM -- "v1 only" --> R1READY
+    VL -- "v1 only" --> R1READY
+    VS -- "v3 only" --> G3
+    VM -- "v3 only" --> G3
+    VL -- "v3 only" --> G3
+    VS -- "Both v1 and v3" --> GB
+    VM -- "Both v1 and v3" --> GB
+    VL -- "Both v1 and v3" --> GB
+    VS -- "Neither" --> ERR
+    VM -- "Neither" --> ERR
+    VL -- "Neither" --> ERR
 
-    XMLVOICE -- Yes --> V1SIZE{"v1 request fits BOTH limits?<br/>5000 characters and 15000 encoded bytes"}
-    XMLVOICE -- No --> STOP
-    PLIB -- No --> STOP
-    PLIB -- Yes --> PVOICE{"Selected voice / role / format support v3 PCM streaming?"}
-    PVOICE -- No --> STOP
-    PVOICE -- Yes --> SINK{"Compatible Hermes PCM sink available?"}
-    SINK -- Yes --> PCM
-    SINK -- No --> STOP
+    R1READY{"v1 form fits one request?<br/>5000 chars and 15000 encoded bytes"}
+    R1READY -- Yes --> R1
+    R1READY -- No --> J1{"Assembler for the requested format available?"}
+    J1 -- Yes --> R1
+    J1 -- No --> ERR
+    G3{"Any required gRPC method interface installed?"}
+    G3 -- No --> R3PERMIT{"REST v3 utterance satisfies the requested voice, controls and output contract?"}
+    R3PERMIT -- No --> ERR
+    R3PERMIT -- Yes --> R3READY{"One REST v3 request fits?<br/>Normal: 250 chars / 24 seconds<br/>Explicit unsafe: 5000 chars"}
+    R3READY -- Yes --> R3
+    R3READY -- No --> J3{"Assembler for the requested format available?"}
+    J3 -- Yes --> R3
+    J3 -- No --> ERR
+    G3 -- "Yes: v1 stays excluded" --> GA
 
-    UNSAFE -- Yes --> UVOICE{"Selected voice / controls support v3 unsafe utterance?"}
-    UVOICE -- No --> STOP
-    UVOICE -- Yes --> UTRAN{"Transport explicitly fixed to gRPC?"}
-    UTRAN -- Yes --> GULIB
-    UTRAN -- No --> ULEN{"Text at most 5000 characters?"}
-    ULEN -- Yes --> UONE
-    ULEN -- No --> UJOIN{"Required audio assembler available?"}
-    UJOIN -- Yes --> UPARTS
-    UJOIN -- No --> STOP
+    GB{"Any required gRPC method interface installed?"}
+    GB -- "No: compare HTTP candidates" --> GH
+    GB -- "Yes: include ready gRPC candidates" --> GA
 
-    UNSAFE -- No --> LEN{"Text length after formatting?"}
-    LEN -- "At most 250" --> SV{"Selected voice API support?"}
-    LEN -- "251 to 5000" --> MV{"Selected voice API support?"}
-    LEN -- "More than 5000" --> LV{"Selected voice API support?"}
+    GH{"Optimization purpose?"}
+    GH -- "Prepared audio: cost first" --> CH{"Lowest finite total cost: C1 or C3R?<br/>Tie: lower estimated delivery time"}
+    GH -- "Conversation: speed first" --> TH{"Lowest estimated delivery time: T1 or T3R?<br/>Tie: lower total cost"}
+    CH -- "v1 wins" --> R1
+    CH -- "REST v3 wins" --> R3
+    CH -- "No complete candidate" --> ERR
+    TH -- "v1 wins" --> R1
+    TH -- "REST v3 wins" --> R3
+    TH -- "No complete candidate" --> ERR
 
-    SV -- "v1 only" --> V1VOICE
-    SV -- "v3 only" --> SUT{"REST v3 utterance compatible with voice and selections?"}
-    SV -- "v1 and v3" --> SUT
-    SUT -- Yes --> R3ONE
-    SUT -- No --> SGLIB{"gRPC utterance libraries installed?"}
-    SGLIB -- No --> MLIB
-    SGLIB -- Yes --> SGVOICE{"gRPC v3 utterance compatible with voice and selections?"}
-    SGVOICE -- Yes --> GUONE
-    SGVOICE -- No --> MLIB
+    GA{"Optimization purpose?"}
+    GA -- "Prepared audio: cost first" --> CA{"Lowest finite total cost:<br/>C1, C3R, C3U, C3S<br/>Tie: lower estimated delivery time"}
+    GA -- "Conversation: speed first" --> TA{"Lowest estimated usable-output time:<br/>T1, T3R, T3U, T3S<br/>Tie: lower total cost"}
+    CA -- "C1 wins" --> R1
+    CA -- "C3R wins" --> R3
+    CA -- "C3U wins" --> GU
+    CA -- "C3S wins" --> GS
+    CA -- "No complete candidate" --> ERR
+    TA -- "T1 wins" --> R1
+    TA -- "T3R wins" --> R3
+    TA -- "T3U wins" --> GU
+    TA -- "T3S wins" --> GS
+    TA -- "No complete candidate" --> ERR
 
-    MV -- "v1 only" --> V1VOICE
-    MV -- "v3 only" --> MLIB{"gRPC streaming libraries installed?"}
-    MV -- "v1 and v3" --> MLIB
-    MLIB -- Yes --> MVOICE{"gRPC v3 streaming compatible with voice and selections?"}
-    MLIB -- No --> V1VOICE
-    MVOICE -- Yes --> GONE
-    MVOICE -- No --> V1VOICE
-
-    LV -- "v1 only" --> V1VOICE
-    LV -- "v3 only" --> LLIB{"gRPC streaming libraries installed?"}
-    LV -- "v1 and v3" --> LLIB
-    LLIB -- No --> V1VOICE
-    LLIB -- Yes --> LVOICE{"gRPC v3 streaming compatible with voice and selections?"}
-    LVOICE -- No --> V1VOICE
-    LVOICE -- Yes --> GJOIN{"Required audio assembler available?"}
-    GJOIN -- Yes --> GPARTS
-    GJOIN -- No --> STOP
-
-    V1VOICE{"REST v1 compatible with voice and selections?"}
-    V1VOICE -- Yes --> V1SIZE
-    V1VOICE -- No --> V3VOICE{"REST v3 utterance compatible with voice and selections?"}
-    V1SIZE -- Yes --> R1ONE
-    V1SIZE -- No --> V1JOIN{"Required audio assembler available?"}
-    V1JOIN -- Yes --> R1PARTS
-    V1JOIN -- No --> STOP
-    V3VOICE -- No --> GULIB{"gRPC utterance libraries installed?"}
-    GULIB -- No --> STOP
-    GULIB -- Yes --> GUVOICE{"gRPC v3 utterance compatible with voice and selections?"}
-    GUVOICE -- No --> STOP
-    GUVOICE -- Yes --> GUSIZE{"Fits one utterance request?<br/>250 normal / 5000 explicitly unsafe"}
-    GUSIZE -- Yes --> GUONE
-    GUSIZE -- No --> GUJOIN{"Required audio assembler available?"}
-    GUJOIN -- Yes --> GUPARTS
-    GUJOIN -- No --> STOP
-    V3VOICE -- Yes --> V3SIZE{"Text at most 250 characters?"}
-    V3SIZE -- Yes --> R3ONE
-    V3SIZE -- No --> V3JOIN{"Required audio assembler available?"}
-    V3JOIN -- Yes --> R3PARTS
-    V3JOIN -- No --> STOP
-
-    SV -- "No supported API" --> STOP
-    MV -- "No supported API" --> STOP
-    LV -- "No supported API" --> STOP
-
-    subgraph APIS["Selected API / generation scenario"]
-        R3ONE["REST v3 UtteranceSynthesis<br/>One normal request"]
-        GONE["gRPC v3 StreamSynthesis<br/>One request to a complete file"]
-        GPARTS["gRPC v3 StreamSynthesis<br/>Ordered 5000-character parts + assembly"]
-        R1ONE["REST v1<br/>One text or SSML request"]
-        R1PARTS["REST v1<br/>Encoded-size-bounded parts + assembly"]
-        R3PARTS["REST v3 UtteranceSynthesis<br/>Ordered 250-character parts + assembly"]
-        UONE["REST v3 UtteranceSynthesis<br/>One explicitly unsafe request"]
-        UPARTS["REST v3 UtteranceSynthesis<br/>Explicitly unsafe parts + assembly"]
-        PCM["gRPC v3 StreamSynthesis<br/>PCM to Hermes playback"]
-        GUONE["gRPC v3 UtteranceSynthesis<br/>One request; selected normal or unsafe mode"]
-        GUPARTS["gRPC v3 UtteranceSynthesis<br/>Ordered parts + assembly; selected mode"]
-        STOP["STOP<br/>Explain unsupported choice or missing prerequisite"]
+    subgraph APIS["One selected generation mechanism"]
+        R1["REST API v1<br/>Text or SSML"]
+        R3["REST API v3<br/>UtteranceSynthesis"]
+        GU["gRPC API v3<br/>UtteranceSynthesis"]
+        GS["gRPC API v3<br/>StreamSynthesis<br/>File or PCM as requested"]
+        ERR["No technically valid complete mechanism<br/>Explain the missing requirement"]
     end
-    classDef decision fill:#f0f5ff,stroke:#3762a6,color:#152b4a;
+    classDef decision fill:#eef4ff,stroke:#3762a6,color:#152b4a;
     classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
     classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
-    class MODE,UNSAFE,XMLVOICE,PLIB,PVOICE,SINK,UVOICE,UTRAN,ULEN,UJOIN,LEN,SV,MV,LV,SUT,SGLIB,SGVOICE,MLIB,MVOICE,LLIB,LVOICE,GJOIN,V1VOICE,V1SIZE,V1JOIN,V3VOICE,GULIB,GUVOICE,GUSIZE,GUJOIN,V3SIZE,V3JOIN decision;
-    class R3ONE,GONE,GPARTS,R1ONE,R1PARTS,R3PARTS,UONE,UPARTS,PCM,GUONE,GUPARTS api;
-    class STOP error;
+    class N,VS,VM,VL,R1READY,J1,G3,R3PERMIT,R3READY,J3,GB,GH,CH,TH,GA,CA,TA decision;
+    class R1,R3,GU,GS api;
+    class ERR error;
 ```
-
-Each diamond is an actual decision: a length band, the selected voice's API
-support, installed gRPC interfaces, exact method compatibility or required assembly.
-Each arrow names the factor's value. Each terminal box is one API/generation
-scenario in the far-right column; there is no common output box.
-
-The compatibility diamonds include the caller's explicit API, transport and method
-constraints as well as the selected voice/model/role, markup and output. No branch
-may override an explicit choice. The gRPC utterance path remains available for
-compatible explicit gRPC/utterance selections or an excluded REST producer.
-
-The base HTTP dependency, valid configuration and credentials are established
-execution prerequisites, not reasons to choose one synthesis API over another.
-
-A definite connection failure before the first synthesis RPC may remove that
-transport and repeat this selection with unchanged user choices. Accepted or
-uncertain work is not automatically replayed on another route. A definite normal
-v3 duration rejection permits bounded splitting on that same method; the duration
-limit cannot be inferred from character count alone.
 
 ## Tech Stack
 
 Existing Python >=3.11 skill, requests HTTP runtime and optional installed
-Yandex gRPC/protobuf interfaces. Already usable generated stubs do not require
-installing the proto compiler. Use existing audio collection/assembly and stock
-Hermes file/PCM interfaces; introduce no provider, runtime or host source patch.
+Yandex gRPC/protobuf interfaces. A working packaged stub does not require
+the proto compiler. Reuse current file/PCM collectors and stock Hermes APIs.
+No ordinary generation request needs Billing API privileges: use an applicable
+dated price book; optional private billing reconciliation is separate.
 
-Provider admission references: [limits](https://aistudio.yandex.ru/en/docs/speechkit/concepts/limits),
-[v1 form](https://aistudio.yandex.ru/en/docs/speechkit/tts/request),
-[v3 REST utterance](https://aistudio.yandex.ru/en/docs/speechkit/tts-v3/api-ref/Synthesizer/utteranceSynthesis),
-and [v3 stream](https://aistudio.yandex.ru/en/docs/speechkit/tts-v3/api-ref/grpc/Synthesizer/streamSynthesis).
-The v1 client enforces a 15,000-byte form budget; the vendor describes 15 KB.
-Do not promote the client's per-RPC streaming policy into a different service-session limit.
+The supplied One-ring pricing-comparison session was read as the method precedent.
+Five distinct speech SKUs in its existing November S3 export corroborated the
+published RUB synthesis, synchronous and normal-asynchronous rates. The source
+is an existing export, not a claimed fresh Usage API call. It does not separate
+REST/gRPC tariffs. Actual usage quantities, account identifiers and source
+session/message references remain private.
 
 ## Commands
 
@@ -223,96 +233,82 @@ GITMARK_NO_GIT=1 gitmark --root . index
 gitmark --root . lint
 ```
 
-These commands describe verification after the revised algorithm is implemented.
-No project/private venv, hardcoded interpreter or dependency installation.
+Commands apply to subsequent implementation. Research so far reuses existing
+billing and timing records and has made zero new speech-generation calls.
 
 ## Project Structure
 
 ```text
-yandex_speech/tts_selection.py       Complete-route filtering and ordered selection
-yandex_speech/tts_capabilities.py    Actual dependency and output-tool readiness
-yandex_speech/tts_text.py            Character/encoded-form admission and partitioning
-scripts/tts.py                     Selected operation execution and complete publication
-integrations/hermes/tts_provider.py Stock file/PCM provider boundary
-tests/test_tts_selection.py         Deterministic decision and unavailable-route checks
-tests/test_tts_dispatch.py          End-to-end local dispatch/partition outcomes
-references/synthesis-provider-testing.md Maintained agent guide after approval
+yandex_speech/tts_selection.py        Complete-operation eligibility and objective ranking
+yandex_speech/tts_capabilities.py     Actual optional method/assembler readiness
+yandex_speech/tts_text.py             Actual text parts and encoded-form admission
+scripts/tts.py                      Execution and complete publication
+integrations/hermes/tts_provider.py  Stock file/PCM boundary and per-call context
+tests/                              Deterministic score/eligibility regression tests
+references/                         Portable agent instructions after approval
 ```
 
-Existing #83 requirements remain in its owning task area and GitHub tracker. #98
-cleanup work remains independently authorized; it does not decide the TTS route.
+Plan will define the smallest price/profile interface within existing scope.
+Prepared whole-file and native outer-chunk boundaries must be explicit: an SDK
+callback cannot claim knowledge of undisclosed whole-message text. Aggregate
+whole-message charges from the actual formatter/chunk/part boundaries.
+#98 artifact cleanup remains independently authorized and unfinished.
 
 ## Code Style
 
-Keep explicit immutable request values and ordered complete-route candidates.
-Illustrative policy, not a claim of implementation:
+Use explicit goal, immutable request identity and complete-operation estimates:
 
 ```python
-for candidate in ordered_routes(request):
-    if candidate.supports(request) and candidate.can_complete(request, runtime):
-        return candidate
-raise SpeechError("PREREQUISITE", "no complete compatible route is ready")
+key = (lambda p: (p.cost, p.usable_latency)) if goal == "cost" else (
+    lambda p: (p.usable_latency, p.cost))
+selected = min(eligible_complete_operations, key=key)
 ```
 
-Never mutate the selected voice or silently enable unsafe mode during fallback.
+This is specification pseudocode, not an implemented API. Resolve estimates
+and hard eligibility before comparison; do not silently substitute a voice.
 
 ## Testing Strategy
 
-Use local deterministic tests for explicit choices, voice/method compatibility,
-missing/broken dependencies, SSML, unsafe mode, output formats, encoded v1 bytes,
-250/5,000 boundaries and failure disposition. These do not create extra paid cases.
+Use deterministic local tests for price-book units, rounding/partitions,
+the 121/122 example, voice/feature exclusions, missing method interfaces,
+missing assembly, cost/speed trade-offs, unknown latency and explicit controls.
+Verify these outcomes rather than mirroring a priority list.
 
-**Exactly three live voice-generation tests on One-ring:**
-
-| Complete reply length | Question and expected default result |
-|---|---|
-| 200 characters: below 250 | Does the ordinary short reply use REST v3 and deliver the complete selected voice? |
-| 1,000 characters: middle band below 5,000 | Does available compatible v3 gRPC streaming avoid ordinary 250-character splitting and deliver the complete reply? |
-| 5,500 characters: above 5,000 | Does the selected route partition/assemble the whole reply, with its final tail delivered in the same voice? |
-
+Exactly three One-ring generation cases remain: 200 / 1,000 / 5,500 characters,
+one per length band, with the same selected voice/model/role. Record purpose,
+selected mechanism, planned/actual units, expected cost, relevant latency, complete
+tail and addressed delivery. Include a conversation and prepared-audio purpose
+across those cases; local tests cover both goals at every boundary.
 The long case must actually exercise a greater-than-5,000-character selector
-input; upstream host chunking into smaller callbacks alone does not prove that
-branch. Use the existing isolated One-ring test scope, preserving permanent
-production configuration, and record the real call boundary.
-
-Use the same selected voice/model/role and automatic API/transport/method settings
-for these three. Record the actual route, whole-input length, completed output and
-addressed delivery. Expected gRPC outcomes require the tested runtime's compatible
-stream interface; unavailable dependencies are proved locally, not by multiplying
-live runs. Staging cleanup can be checked within these same three TTS operations.
-There is no live voice/API cross-product or extra 250/5,000 boundary run. The old
-65-case matrix is retired, not paused or waiting to resume.
+input in the existing isolated scope; record host outer chunks separately.
+Do not expand them into a live voice/API matrix.
 
 ## Boundaries
 
-- Always: preserve selected identity, controls and output; honor explicit constraints;
-  preflight the complete operation; report selected route and exclusion reasons.
-- Ask first: activation of a revised production policy, new dependencies or host
-  changes, additional paid test cases or different user voice/quality choices.
-- Never: change voices, enable unsafe implicitly, install a missing runtime during
-  generation, return a prefix as complete, replay accepted/uncertain paid work,
-  use S3 as a TTS routing requirement or resurrect the retired 65-case matrix.
+- Always: preserve the required result/quality; optimize only eligible complete
+  operations; expose goal, cost/time estimates, source/date/confidence and exclusions.
+- Ask first: extra paid comparisons, new dependencies, IAM/credential/bucket-policy
+  changes or live routing activation beyond approved scope.
+- Never: use API recency/RPC count as a price; treat missing timing as zero;
+  change voices, enable unsafe implicitly, replay accepted/uncertain work,
+  patch Hermes or revive the retired test expansion.
 
 ## Success Criteria
 
-- **AC83-03 revised:** apply the factors, outcomes and exact preference orders above;
-  at most 250 characters uses REST v3 by default when it supports the request and
-  is ready. Both-version voice support does not select v1 automatically. Explicit
-  choices and exact method compatibility remain constraints.
-- **AC83-04 retained:** calculate complete request partitions from the selected
-  method's character, encoded-body and duration limits; retain order, final tail
-  and requested output without unnecessary conversion or incomplete publication.
-- **AC83-09/10 retained:** unavailable dependencies or output assembly exclude only
-  affected complete routes; choose the first remaining route or diagnose the exact
-  prerequisite before paid work. Never claim readiness from package metadata alone.
-- **AC83-11 replaced:** exactly the three One-ring cases above prove short, middle
-  and long complete replies. Local tests cover decision combinations and exact
-  boundaries. Prior acceptance evidence remains historical; it does not validate
-  a revised selector. Commissioning and merge require the applicable final evidence.
+- **AC83-03 revised:** selection minimizes (C,T) or (T,C) according to purpose,
+  with hard requirements preserved and the winning objective/exclusions recorded.
+- **AC83-04 retained:** cost uses actual formatted/partitioned submissions and
+  complete output work; the whole reply and final tail are preserved.
+- **AC83-06/07 revised:** public tariff, private invoice validation, local plan
+  and measured latency remain distinguished; first fragment is not playback.
+- **AC83-09/10 retained:** dependencies, exact voice/method/control support and
+  assembly constrain eligibility rather than silently changing the output.
+- **AC83-11 replaced:** exactly three live voice cases; local combinations and
+  old records do not commission a revised selector by themselves.
 
 ## Open Questions
 
-The decision for review is the proposed automatic preference order, especially
-REST v3 for short replies and compatible REST v1 as the long-file fallback when
-usable v3 streaming is absent. Approval advances this revision to implementation
-planning; no routing activation or additional live tests are inferred.
+The operator has supplied the objective distinction; no invented numeric weights
+or latency SLA are proposed. Profiles with inadequate timing evidence remain
+qualified estimates. Review concerns this business policy and eligibility/cost
+contracts; current runtime routing has not been changed to implement them.

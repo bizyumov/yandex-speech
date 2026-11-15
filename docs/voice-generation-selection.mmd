@@ -1,104 +1,77 @@
+---
+title: TO-BE - choose speech generation by cost or response speed
+---
 flowchart LR
-    MODE{"Automatic selection:<br/>requested output / input?"}
-    MODE -- "Audio file: plain or native markup" --> UNSAFE{"unsafe mode explicitly enabled?"}
-    MODE -- "Audio file: XML SSML" --> XMLVOICE{"Selected voice and controls support v1 SSML?"}
-    MODE -- "Speak as audio is generated" --> PLIB{"gRPC streaming libraries installed?"}
+    N{"Formatted message length?"}
+    N -- "At most 250 characters" --> VS{"APIs permitted by the chosen voice and required features?"}
+    N -- "251 to 5000 characters" --> VM{"APIs permitted by the chosen voice and required features?"}
+    N -- "More than 5000 characters" --> VL{"APIs permitted by the chosen voice and required features?"}
+    VS -- "v1 only" --> R1READY
+    VM -- "v1 only" --> R1READY
+    VL -- "v1 only" --> R1READY
+    VS -- "v3 only" --> G3
+    VM -- "v3 only" --> G3
+    VL -- "v3 only" --> G3
+    VS -- "Both v1 and v3" --> GB
+    VM -- "Both v1 and v3" --> GB
+    VL -- "Both v1 and v3" --> GB
+    VS -- "Neither" --> ERR
+    VM -- "Neither" --> ERR
+    VL -- "Neither" --> ERR
 
-    XMLVOICE -- Yes --> V1SIZE{"v1 request fits BOTH limits?<br/>5000 characters and 15000 encoded bytes"}
-    XMLVOICE -- No --> STOP
-    PLIB -- No --> STOP
-    PLIB -- Yes --> PVOICE{"Selected voice / role / format support v3 PCM streaming?"}
-    PVOICE -- No --> STOP
-    PVOICE -- Yes --> SINK{"Compatible Hermes PCM sink available?"}
-    SINK -- Yes --> PCM
-    SINK -- No --> STOP
+    R1READY{"v1 form fits one request?<br/>5000 chars and 15000 encoded bytes"}
+    R1READY -- Yes --> R1
+    R1READY -- No --> J1{"Assembler for the requested format available?"}
+    J1 -- Yes --> R1
+    J1 -- No --> ERR
+    G3{"Any required gRPC method interface installed?"}
+    G3 -- No --> R3PERMIT{"REST v3 utterance satisfies the requested voice, controls and output contract?"}
+    R3PERMIT -- No --> ERR
+    R3PERMIT -- Yes --> R3READY{"One REST v3 request fits?<br/>Normal: 250 chars / 24 seconds<br/>Explicit unsafe: 5000 chars"}
+    R3READY -- Yes --> R3
+    R3READY -- No --> J3{"Assembler for the requested format available?"}
+    J3 -- Yes --> R3
+    J3 -- No --> ERR
+    G3 -- "Yes: v1 stays excluded" --> GA
 
-    UNSAFE -- Yes --> UVOICE{"Selected voice / controls support v3 unsafe utterance?"}
-    UVOICE -- No --> STOP
-    UVOICE -- Yes --> UTRAN{"Transport explicitly fixed to gRPC?"}
-    UTRAN -- Yes --> GULIB
-    UTRAN -- No --> ULEN{"Text at most 5000 characters?"}
-    ULEN -- Yes --> UONE
-    ULEN -- No --> UJOIN{"Required audio assembler available?"}
-    UJOIN -- Yes --> UPARTS
-    UJOIN -- No --> STOP
+    GB{"Any required gRPC method interface installed?"}
+    GB -- "No: compare HTTP candidates" --> GH
+    GB -- "Yes: include ready gRPC candidates" --> GA
 
-    UNSAFE -- No --> LEN{"Text length after formatting?"}
-    LEN -- "At most 250" --> SV{"Selected voice API support?"}
-    LEN -- "251 to 5000" --> MV{"Selected voice API support?"}
-    LEN -- "More than 5000" --> LV{"Selected voice API support?"}
+    GH{"Optimization purpose?"}
+    GH -- "Prepared audio: cost first" --> CH{"Lowest finite total cost: C1 or C3R?<br/>Tie: lower estimated delivery time"}
+    GH -- "Conversation: speed first" --> TH{"Lowest estimated delivery time: T1 or T3R?<br/>Tie: lower total cost"}
+    CH -- "v1 wins" --> R1
+    CH -- "REST v3 wins" --> R3
+    CH -- "No complete candidate" --> ERR
+    TH -- "v1 wins" --> R1
+    TH -- "REST v3 wins" --> R3
+    TH -- "No complete candidate" --> ERR
 
-    SV -- "v1 only" --> V1VOICE
-    SV -- "v3 only" --> SUT{"REST v3 utterance compatible with voice and selections?"}
-    SV -- "v1 and v3" --> SUT
-    SUT -- Yes --> R3ONE
-    SUT -- No --> SGLIB{"gRPC utterance libraries installed?"}
-    SGLIB -- No --> MLIB
-    SGLIB -- Yes --> SGVOICE{"gRPC v3 utterance compatible with voice and selections?"}
-    SGVOICE -- Yes --> GUONE
-    SGVOICE -- No --> MLIB
+    GA{"Optimization purpose?"}
+    GA -- "Prepared audio: cost first" --> CA{"Lowest finite total cost:<br/>C1, C3R, C3U, C3S<br/>Tie: lower estimated delivery time"}
+    GA -- "Conversation: speed first" --> TA{"Lowest estimated usable-output time:<br/>T1, T3R, T3U, T3S<br/>Tie: lower total cost"}
+    CA -- "C1 wins" --> R1
+    CA -- "C3R wins" --> R3
+    CA -- "C3U wins" --> GU
+    CA -- "C3S wins" --> GS
+    CA -- "No complete candidate" --> ERR
+    TA -- "T1 wins" --> R1
+    TA -- "T3R wins" --> R3
+    TA -- "T3U wins" --> GU
+    TA -- "T3S wins" --> GS
+    TA -- "No complete candidate" --> ERR
 
-    MV -- "v1 only" --> V1VOICE
-    MV -- "v3 only" --> MLIB{"gRPC streaming libraries installed?"}
-    MV -- "v1 and v3" --> MLIB
-    MLIB -- Yes --> MVOICE{"gRPC v3 streaming compatible with voice and selections?"}
-    MLIB -- No --> V1VOICE
-    MVOICE -- Yes --> GONE
-    MVOICE -- No --> V1VOICE
-
-    LV -- "v1 only" --> V1VOICE
-    LV -- "v3 only" --> LLIB{"gRPC streaming libraries installed?"}
-    LV -- "v1 and v3" --> LLIB
-    LLIB -- No --> V1VOICE
-    LLIB -- Yes --> LVOICE{"gRPC v3 streaming compatible with voice and selections?"}
-    LVOICE -- No --> V1VOICE
-    LVOICE -- Yes --> GJOIN{"Required audio assembler available?"}
-    GJOIN -- Yes --> GPARTS
-    GJOIN -- No --> STOP
-
-    V1VOICE{"REST v1 compatible with voice and selections?"}
-    V1VOICE -- Yes --> V1SIZE
-    V1VOICE -- No --> V3VOICE{"REST v3 utterance compatible with voice and selections?"}
-    V1SIZE -- Yes --> R1ONE
-    V1SIZE -- No --> V1JOIN{"Required audio assembler available?"}
-    V1JOIN -- Yes --> R1PARTS
-    V1JOIN -- No --> STOP
-    V3VOICE -- No --> GULIB{"gRPC utterance libraries installed?"}
-    GULIB -- No --> STOP
-    GULIB -- Yes --> GUVOICE{"gRPC v3 utterance compatible with voice and selections?"}
-    GUVOICE -- No --> STOP
-    GUVOICE -- Yes --> GUSIZE{"Fits one utterance request?<br/>250 normal / 5000 explicitly unsafe"}
-    GUSIZE -- Yes --> GUONE
-    GUSIZE -- No --> GUJOIN{"Required audio assembler available?"}
-    GUJOIN -- Yes --> GUPARTS
-    GUJOIN -- No --> STOP
-    V3VOICE -- Yes --> V3SIZE{"Text at most 250 characters?"}
-    V3SIZE -- Yes --> R3ONE
-    V3SIZE -- No --> V3JOIN{"Required audio assembler available?"}
-    V3JOIN -- Yes --> R3PARTS
-    V3JOIN -- No --> STOP
-
-    SV -- "No supported API" --> STOP
-    MV -- "No supported API" --> STOP
-    LV -- "No supported API" --> STOP
-
-    subgraph APIS["Selected API / generation scenario"]
-        R3ONE["REST v3 UtteranceSynthesis<br/>One normal request"]
-        GONE["gRPC v3 StreamSynthesis<br/>One request to a complete file"]
-        GPARTS["gRPC v3 StreamSynthesis<br/>Ordered 5000-character parts + assembly"]
-        R1ONE["REST v1<br/>One text or SSML request"]
-        R1PARTS["REST v1<br/>Encoded-size-bounded parts + assembly"]
-        R3PARTS["REST v3 UtteranceSynthesis<br/>Ordered 250-character parts + assembly"]
-        UONE["REST v3 UtteranceSynthesis<br/>One explicitly unsafe request"]
-        UPARTS["REST v3 UtteranceSynthesis<br/>Explicitly unsafe parts + assembly"]
-        PCM["gRPC v3 StreamSynthesis<br/>PCM to Hermes playback"]
-        GUONE["gRPC v3 UtteranceSynthesis<br/>One request; selected normal or unsafe mode"]
-        GUPARTS["gRPC v3 UtteranceSynthesis<br/>Ordered parts + assembly; selected mode"]
-        STOP["STOP<br/>Explain unsupported choice or missing prerequisite"]
+    subgraph APIS["One selected generation mechanism"]
+        R1["REST API v1<br/>Text or SSML"]
+        R3["REST API v3<br/>UtteranceSynthesis"]
+        GU["gRPC API v3<br/>UtteranceSynthesis"]
+        GS["gRPC API v3<br/>StreamSynthesis<br/>File or PCM as requested"]
+        ERR["No technically valid complete mechanism<br/>Explain the missing requirement"]
     end
-    classDef decision fill:#f0f5ff,stroke:#3762a6,color:#152b4a;
+    classDef decision fill:#eef4ff,stroke:#3762a6,color:#152b4a;
     classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
     classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
-    class MODE,UNSAFE,XMLVOICE,PLIB,PVOICE,SINK,UVOICE,UTRAN,ULEN,UJOIN,LEN,SV,MV,LV,SUT,SGLIB,SGVOICE,MLIB,MVOICE,LLIB,LVOICE,GJOIN,V1VOICE,V1SIZE,V1JOIN,V3VOICE,GULIB,GUVOICE,GUSIZE,GUJOIN,V3SIZE,V3JOIN decision;
-    class R3ONE,GONE,GPARTS,R1ONE,R1PARTS,R3PARTS,UONE,UPARTS,PCM,GUONE,GUPARTS api;
-    class STOP error;
+    class N,VS,VM,VL,R1READY,J1,G3,R3PERMIT,R3READY,J3,GB,GH,CH,TH,GA,CA,TA decision;
+    class R1,R3,GU,GS api;
+    class ERR error;
