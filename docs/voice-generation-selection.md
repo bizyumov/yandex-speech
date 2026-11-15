@@ -23,7 +23,7 @@ publishing it.
 | Completed file or progressive speech | Progressive speech requires a compatible gRPC v3 stream and the stock PCM sink. Completed files can use any eligible file producer. |
 | Explicit API, transport, file method and unsafe mode | These constrain the candidate set. Contradictory choices produce an error. Unsafe mode is never enabled implicitly. |
 | Text character count and complete v1 encoded form size | Determine request partitions. The v1 byte budget includes every form parameter. |
-| Installed working HTTP/gRPC interfaces | Missing optional gRPC removes gRPC routes; no installation is performed during generation. |
+| Installed gRPC runtime, protobuf and method stubs | Missing streaming or utterance libraries takes the corresponding No branch. The baseline HTTP runtime is not an API-selection factor. |
 | Requested format/rate and required output assembly | Exclude routes that cannot complete that output with available tools before sending paid work. |
 
 | Possible outcome | Contract |
@@ -69,36 +69,127 @@ joiner; WAV/LPCM assembly uses the existing standard-library path. One complete
 provider container requires no joiner just to save it. Selection checks these
 requirements before the first paid request.
 
+[Open the full-size decision tree (SVG)](voice-generation-selection.svg) · [Mermaid source](voice-generation-selection.mmd)
+
 ```mermaid
 flowchart LR
-    subgraph INPUTS[Decision factors]
-        direction TB
-        A["Voice / model / role<br/>Markup and output mode<br/>Explicit API / transport / method / unsafe"]
-        B["Text characters<br/>Complete v1 encoded form bytes"]
-        C["Working HTTP / gRPC interfaces<br/>Required assembler or PCM sink"]
+    MODE{"Automatic selection:<br/>requested output / input?"}
+    MODE -- "Audio file: plain or native markup" --> UNSAFE{"unsafe mode explicitly enabled?"}
+    MODE -- "Audio file: XML SSML" --> XMLVOICE{"Selected voice and controls support v1 SSML?"}
+    MODE -- "Speak as audio is generated" --> PLIB{"gRPC streaming libraries installed?"}
+
+    XMLVOICE -- Yes --> V1SIZE{"v1 request fits BOTH limits?<br/>5000 characters and 15000 encoded bytes"}
+    XMLVOICE -- No --> STOP
+    PLIB -- No --> STOP
+    PLIB -- Yes --> PVOICE{"Selected voice / role / format support v3 PCM streaming?"}
+    PVOICE -- No --> STOP
+    PVOICE -- Yes --> SINK{"Compatible Hermes PCM sink available?"}
+    SINK -- Yes --> PCM
+    SINK -- No --> STOP
+
+    UNSAFE -- Yes --> UVOICE{"Selected voice / controls support v3 unsafe utterance?"}
+    UVOICE -- No --> STOP
+    UVOICE -- Yes --> UTRAN{"Transport explicitly fixed to gRPC?"}
+    UTRAN -- Yes --> GULIB
+    UTRAN -- No --> ULEN{"Text at most 5000 characters?"}
+    ULEN -- Yes --> UONE
+    ULEN -- No --> UJOIN{"Required audio assembler available?"}
+    UJOIN -- Yes --> UPARTS
+    UJOIN -- No --> STOP
+
+    UNSAFE -- No --> LEN{"Text length after formatting?"}
+    LEN -- "At most 250" --> SV{"Selected voice API support?"}
+    LEN -- "251 to 5000" --> MV{"Selected voice API support?"}
+    LEN -- "More than 5000" --> LV{"Selected voice API support?"}
+
+    SV -- "v1 only" --> V1VOICE
+    SV -- "v3 only" --> SUT{"REST v3 utterance compatible with voice and selections?"}
+    SV -- "v1 and v3" --> SUT
+    SUT -- Yes --> R3ONE
+    SUT -- No --> SGLIB{"gRPC utterance libraries installed?"}
+    SGLIB -- No --> MLIB
+    SGLIB -- Yes --> SGVOICE{"gRPC v3 utterance compatible with voice and selections?"}
+    SGVOICE -- Yes --> GUONE
+    SGVOICE -- No --> MLIB
+
+    MV -- "v1 only" --> V1VOICE
+    MV -- "v3 only" --> MLIB{"gRPC streaming libraries installed?"}
+    MV -- "v1 and v3" --> MLIB
+    MLIB -- Yes --> MVOICE{"gRPC v3 streaming compatible with voice and selections?"}
+    MLIB -- No --> V1VOICE
+    MVOICE -- Yes --> GONE
+    MVOICE -- No --> V1VOICE
+
+    LV -- "v1 only" --> V1VOICE
+    LV -- "v3 only" --> LLIB{"gRPC streaming libraries installed?"}
+    LV -- "v1 and v3" --> LLIB
+    LLIB -- No --> V1VOICE
+    LLIB -- Yes --> LVOICE{"gRPC v3 streaming compatible with voice and selections?"}
+    LVOICE -- No --> V1VOICE
+    LVOICE -- Yes --> GJOIN{"Required audio assembler available?"}
+    GJOIN -- Yes --> GPARTS
+    GJOIN -- No --> STOP
+
+    V1VOICE{"REST v1 compatible with voice and selections?"}
+    V1VOICE -- Yes --> V1SIZE
+    V1VOICE -- No --> V3VOICE{"REST v3 utterance compatible with voice and selections?"}
+    V1SIZE -- Yes --> R1ONE
+    V1SIZE -- No --> V1JOIN{"Required audio assembler available?"}
+    V1JOIN -- Yes --> R1PARTS
+    V1JOIN -- No --> STOP
+    V3VOICE -- No --> GULIB{"gRPC utterance libraries installed?"}
+    GULIB -- No --> STOP
+    GULIB -- Yes --> GUVOICE{"gRPC v3 utterance compatible with voice and selections?"}
+    GUVOICE -- No --> STOP
+    GUVOICE -- Yes --> GUSIZE{"Fits one utterance request?<br/>250 normal / 5000 explicitly unsafe"}
+    GUSIZE -- Yes --> GUONE
+    GUSIZE -- No --> GUJOIN{"Required audio assembler available?"}
+    GUJOIN -- Yes --> GUPARTS
+    GUJOIN -- No --> STOP
+    V3VOICE -- Yes --> V3SIZE{"Text at most 250 characters?"}
+    V3SIZE -- Yes --> R3ONE
+    V3SIZE -- No --> V3JOIN{"Required audio assembler available?"}
+    V3JOIN -- Yes --> R3PARTS
+    V3JOIN -- No --> STOP
+
+    SV -- "No supported API" --> STOP
+    MV -- "No supported API" --> STOP
+    LV -- "No supported API" --> STOP
+
+    subgraph APIS["Selected API / generation scenario"]
+        R3ONE["REST v3 UtteranceSynthesis<br/>One normal request"]
+        GONE["gRPC v3 StreamSynthesis<br/>One request to a complete file"]
+        GPARTS["gRPC v3 StreamSynthesis<br/>Ordered 5000-character parts + assembly"]
+        R1ONE["REST v1<br/>One text or SSML request"]
+        R1PARTS["REST v1<br/>Encoded-size-bounded parts + assembly"]
+        R3PARTS["REST v3 UtteranceSynthesis<br/>Ordered 250-character parts + assembly"]
+        UONE["REST v3 UtteranceSynthesis<br/>One explicitly unsafe request"]
+        UPARTS["REST v3 UtteranceSynthesis<br/>Explicitly unsafe parts + assembly"]
+        PCM["gRPC v3 StreamSynthesis<br/>PCM to Hermes playback"]
+        GUONE["gRPC v3 UtteranceSynthesis<br/>One request; selected normal or unsafe mode"]
+        GUPARTS["gRPC v3 UtteranceSynthesis<br/>Ordered parts + assembly; selected mode"]
+        STOP["STOP<br/>Explain unsupported choice or missing prerequisite"]
     end
-    A --> F["Keep compatible complete routes<br/>Apply every explicit constraint<br/>Check partitions and output work"]
-    B --> F
-    C --> F
-    F --> E{"Any complete route available?"}
-    E -- No --> ERR["Explain incompatibility or prerequisite<br/>Do not submit paid work"]
-    E -- Yes --> MODE{"Progressive speech?"}
-    MODE -- Yes --> PCM["gRPC v3 StreamSynthesis<br/>to the stock PCM sink"]
-    MODE -- "No: completed file" --> KIND{"SSML or explicit unsafe?"}
-    KIND -- SSML --> V1["REST v1"]
-    KIND -- "Explicit unsafe" --> U["First available:<br/>REST v3 unsafe<br/>then gRPC v3 unsafe"]
-    KIND -- Neither --> LEN{"Text at most 250 characters?"}
-    LEN -- Yes --> SHORT["First available:<br/>1 REST v3 utterance<br/>2 gRPC v3 utterance<br/>3 gRPC v3 stream<br/>4 REST v1"]
-    LEN -- No --> LONG["First available:<br/>1 gRPC v3 stream<br/>2 REST v1<br/>3 REST v3 utterance<br/>4 gRPC v3 utterance"]
-    SHORT --> FILE["Run planned parts in order<br/>Assemble when required<br/>Publish the complete requested file"]
-    LONG --> FILE
-    V1 --> FILE
-    U --> FILE
+    classDef decision fill:#f0f5ff,stroke:#3762a6,color:#152b4a;
+    classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
+    classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
+    class MODE,UNSAFE,XMLVOICE,PLIB,PVOICE,SINK,UVOICE,UTRAN,ULEN,UJOIN,LEN,SV,MV,LV,SUT,SGLIB,SGVOICE,MLIB,MVOICE,LLIB,LVOICE,GJOIN,V1VOICE,V1SIZE,V1JOIN,V3VOICE,GULIB,GUVOICE,GUSIZE,GUJOIN,V3SIZE,V3JOIN decision;
+    class R3ONE,GONE,GPARTS,R1ONE,R1PARTS,R3PARTS,UONE,UPARTS,PCM,GUONE,GUPARTS api;
+    class STOP error;
 ```
 
-Every 'available' route in the chart already passed the exact voice, explicit-choice,
-dependency and complete-output checks. Consequently, unsupported SSML/progressive
-or voice/API combinations reach the error before the chart's output branches.
+Each diamond is an actual decision: a length band, the selected voice's API
+support, installed gRPC interfaces, exact method compatibility or required assembly.
+Each arrow names the factor's value. Each terminal box is one API/generation
+scenario in the far-right column; there is no common output box.
+
+The compatibility diamonds include the caller's explicit API, transport and method
+constraints as well as the selected voice/model/role, markup and output. No branch
+may override an explicit choice. The gRPC utterance path remains available for
+compatible explicit gRPC/utterance selections or an excluded REST producer.
+
+The base HTTP dependency, valid configuration and credentials are established
+execution prerequisites, not reasons to choose one synthesis API over another.
 
 A definite connection failure before the first synthesis RPC may remove that
 transport and repeat this selection with unchanged user choices. Accepted or
