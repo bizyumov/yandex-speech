@@ -1,77 +1,110 @@
 ---
-title: TO-BE - choose speech generation by cost or response speed
+title: TO-BE - generation input factors and one selected mechanism
 ---
 flowchart LR
-    N{"Formatted message length?"}
-    N -- "At most 250 characters" --> VS{"APIs permitted by the chosen voice and required features?"}
-    N -- "251 to 5000 characters" --> VM{"APIs permitted by the chosen voice and required features?"}
-    N -- "More than 5000 characters" --> VL{"APIs permitted by the chosen voice and required features?"}
-    VS -- "v1 only" --> R1READY
-    VM -- "v1 only" --> R1READY
-    VL -- "v1 only" --> R1READY
-    VS -- "v3 only" --> G3
-    VM -- "v3 only" --> G3
-    VL -- "v3 only" --> G3
-    VS -- "Both v1 and v3" --> GB
-    VM -- "Both v1 and v3" --> GB
-    VL -- "Both v1 and v3" --> GB
-    VS -- "Neither" --> ERR
-    VM -- "Neither" --> ERR
-    VL -- "Neither" --> ERR
+    subgraph INPUTS["LEFT: input factors, each shown once"]
+        V["Voice profile<br/>v1 / v3 / both"]
+        N["Text payload<br/>N chars / v1 encoded bytes"]
+        G["Installed gRPC<br/>utterance / stream"]
+        M["Markup<br/>plain / native / SSML"]
+        O["Delivery<br/>file / progressive PCM"]
+        A["Format and assembly tools"]
+        X["Explicit API / method flags"]
+        P["Objective<br/>cost / speed"]
+        L["Latency estimates T_i"]
+        R["RUB rates<br/>v1: 1342 / million chars<br/>v3: 0.1626 general / 0.25 livetts"]
+    end
 
-    R1READY{"v1 form fits one request?<br/>5000 chars and 15000 encoded bytes"}
-    R1READY -- Yes --> R1
-    R1READY -- No --> J1{"Assembler for the requested format available?"}
-    J1 -- Yes --> R1
-    J1 -- No --> ERR
-    G3{"Any required gRPC method interface installed?"}
-    G3 -- No --> R3PERMIT{"REST v3 utterance satisfies the requested voice, controls and output contract?"}
-    R3PERMIT -- No --> ERR
-    R3PERMIT -- Yes --> R3READY{"One REST v3 request fits?<br/>Normal: 250 chars / 24 seconds<br/>Explicit unsafe: 5000 chars"}
-    R3READY -- Yes --> R3
-    R3READY -- No --> J3{"Assembler for the requested format available?"}
-    J3 -- Yes --> R3
-    J3 -- No --> ERR
-    G3 -- "Yes: v1 stays excluded" --> GA
+    N -- "At most 250" --> NS["At most 250<br/>normal v3: one part<br/>stream: one part"]
+    N -- "251 to 5000" --> NM["251 to 5000<br/>normal v3: 250-char parts<br/>stream: one 5000-char part"]
+    N -- "More than 5000" --> NL["More than 5000<br/>valid parts per method<br/>include required assembly"]
 
-    GB{"Any required gRPC method interface installed?"}
-    GB -- "No: compare HTTP candidates" --> GH
-    GB -- "Yes: include ready gRPC candidates" --> GA
+    V -- "v1 support bit" --> S1
+    V -- "v3 support bit" --> V3BIT(("v3"))
+    V3BIT --> SR
+    V3BIT --> SU
+    V3BIT --> SS
+    G -- "utterance ready: yes/no" --> SU
+    G -- "stream ready: yes/no" --> SS
+    M -.-> S1
+    M -.-> SR
+    M -.-> SU
+    M -.-> SS
+    O -.-> S1
+    O -.-> SR
+    O -.-> SU
+    O -.-> SS
+    A -.-> S1
+    A -.-> SR
+    A -.-> SU
+    A -.-> SS
+    X -.-> S1
+    X -.-> SR
+    X -.-> SU
+    X -.-> SS
 
-    GH{"Optimization purpose?"}
-    GH -- "Prepared audio: cost first" --> CH{"Lowest finite total cost: C1 or C3R?<br/>Tie: lower estimated delivery time"}
-    GH -- "Conversation: speed first" --> TH{"Lowest estimated delivery time: T1 or T3R?<br/>Tie: lower total cost"}
-    CH -- "v1 wins" --> R1
-    CH -- "REST v3 wins" --> R3
-    CH -- "No complete candidate" --> ERR
-    TH -- "v1 wins" --> R1
-    TH -- "REST v3 wins" --> R3
-    TH -- "No complete candidate" --> ERR
+    NS -.-> S1
+    NS -.-> SR
+    NS -.-> SU
+    NS -.-> SS
+    NM -.-> S1
+    NM -.-> SR
+    NM -.-> SU
+    NM -.-> SS
+    NL -.-> S1
+    NL -.-> SR
+    NL -.-> SU
+    NL -.-> SS
+    R -.-> S1
+    R -.-> SR
+    R -.-> SU
+    R -.-> SS
+    L -.-> S1
+    L -.-> SR
+    L -.-> SU
+    L -.-> SS
 
-    GA{"Optimization purpose?"}
-    GA -- "Prepared audio: cost first" --> CA{"Lowest finite total cost:<br/>C1, C3R, C3U, C3S<br/>Tie: lower estimated delivery time"}
-    GA -- "Conversation: speed first" --> TA{"Lowest estimated usable-output time:<br/>T1, T3R, T3U, T3S<br/>Tie: lower total cost"}
-    CA -- "C1 wins" --> R1
-    CA -- "C3R wins" --> R3
-    CA -- "C3U wins" --> GU
-    CA -- "C3S wins" --> GS
-    CA -- "No complete candidate" --> ERR
-    TA -- "T1 wins" --> R1
-    TA -- "T3R wins" --> R3
-    TA -- "T3U wins" --> GU
-    TA -- "T3S wins" --> GS
-    TA -- "No complete candidate" --> ERR
+    S1["REST v1<br/>v1 voice; file; SSML/plain allowed<br/>C1 = r1 x submitted chars<br/>T1 = file-ready estimate"]
+    SR["REST v3 utterance<br/>v3 voice; plain/native file<br/>C3R = r3 x billed blocks<br/>T3R = file-ready estimate"]
+    SU["gRPC v3 utterance<br/>v3 voice; utterance stub; plain/native file<br/>C3U = r3 x billed blocks<br/>T3U = file-ready estimate"]
+    SS["gRPC v3 streaming<br/>v3 voice; stream stub; compatible controls<br/>C3S = r3 x billed blocks<br/>T3S = file-ready / first PCM"]
 
-    subgraph APIS["One selected generation mechanism"]
-        R1["REST API v1<br/>Text or SSML"]
+    P -- "Prepared: cost first" --> COST{"Minimum finite pair<br/>(total cost C, delivery time T)?"}
+    P -- "Conversation: speed first" --> SPEED{"Minimum finite pair<br/>(delivery time T, total cost C)?"}
+    S1 -.-> COST
+    SR -.-> COST
+    SU -.-> COST
+    SS -.-> COST
+    S1 -.-> SPEED
+    SR -.-> SPEED
+    SU -.-> SPEED
+    SS -.-> SPEED
+
+    COST -- "v1 wins" --> R1
+    COST -- "REST v3 wins" --> R3
+    COST -- "gRPC utterance wins" --> GU
+    COST -- "gRPC stream wins" --> GS
+    COST -- "No eligible candidate" --> ERR
+    SPEED -- "v1 wins" --> R1
+    SPEED -- "REST v3 wins" --> R3
+    SPEED -- "gRPC utterance wins" --> GU
+    SPEED -- "gRPC stream wins" --> GS
+    SPEED -- "No eligible candidate" --> ERR
+
+    subgraph APIS["RIGHT: exactly one selected generation mechanism"]
+        R1["REST API v1"]
         R3["REST API v3<br/>UtteranceSynthesis"]
         GU["gRPC API v3<br/>UtteranceSynthesis"]
-        GS["gRPC API v3<br/>StreamSynthesis<br/>File or PCM as requested"]
-        ERR["No technically valid complete mechanism<br/>Explain the missing requirement"]
+        GS["gRPC API v3<br/>StreamSynthesis"]
+        ERR["No technically valid mechanism"]
     end
-    classDef decision fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef factor fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef calculation fill:#fff8e1,stroke:#a67c00,color:#493600;
+    classDef decision fill:#e8eaf6,stroke:#3949ab,color:#152b4a;
     classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
     classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
-    class N,VS,VM,VL,R1READY,J1,G3,R3PERMIT,R3READY,J3,GB,GH,CH,TH,GA,CA,TA decision;
+    class V,N,G,M,O,A,X,P,L,R factor;
+    class NS,NM,NL,S1,SR,SU,SS calculation;
+    class COST,SPEED decision;
     class R1,R3,GU,GS api;
     class ERR error;

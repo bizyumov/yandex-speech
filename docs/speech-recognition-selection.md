@@ -95,9 +95,16 @@ queueing, polling and formatting, with source/date/confidence. Comparable STT
 timing coverage is not established by TTS timings or by a provider price table.
 Use qualified estimates and normal-operation telemetry. If comparable estimates
 are missing, use the same declared speed-unverified fallback as generation:
+standard-priority over deferred queue for an unmeasured speed comparison, then
 fewer sequential provider calls, fewer conversion/assembly passes, lower total
 charge and a stable mechanism key. Include async polling/result retrieval in
 that work count. Do not call this proof of a fastest route or launch paid exploration.
+
+Each input factor appears once on the left. Each asynchronous backend evaluates
+its eligible queue/source variants under the same objective and retains the exact
+winning queue/source with its score. Selecting the best complete plan per backend,
+then the best backend, is equivalent to minimizing over all eligible complete
+plans; the final output is one resolved mechanism, not a menu of alternatives.
 
 Every comparison below uses complete candidate plans; incompatible modes,
 missing interfaces, rejected result features and unavailable source/output work
@@ -110,77 +117,123 @@ hold. Exact ties use the other business metric, then less ancillary work.
 
 ```mermaid
 ---
-title: TO-BE - choose speech recognition by cost or response speed
+title: TO-BE - recognition input factors and one selected mechanism
 ---
 flowchart LR
-    LIVE{"Audio arriving during a conversation?"}
-    LIVE -- Yes --> SLIB{"v3 gRPC streaming interface installed?"}
-    SLIB -- No --> ERR
-    SLIB -- Yes --> SFEATURES{"Streaming preserves the required language, channels and result features?"}
-    SFEATURES -- Yes --> STREAM
-    SFEATURES -- No --> ERR
-
-    LIVE -- "No: recorded input" --> SIZE{"Prepared source admission?"}
-    SIZE -- "Within sync size/duration limits" --> GSHORT{"Required gRPC interfaces installed?"}
-    SIZE -- "Beyond sync; whole async inline fits" --> GINLINE{"Required gRPC interfaces installed?"}
-    SIZE -- "S3 URI or partitioning required" --> GLARGE{"Required gRPC interfaces installed?"}
-    GSHORT -- Yes --> GYES
-    GINLINE -- Yes --> GYES
-    GLARGE -- Yes --> GYES
-    GSHORT -- No --> GNO
-    GINLINE -- No --> GNO
-    GLARGE -- No --> GNO
-
-    GYES{"Optimization purpose?<br/>Include only ready methods"}
-    GNO{"Optimization purpose?<br/>gRPC candidates are excluded"}
-    GYES -- "Conversation: speed first" --> FAST
-    GNO -- "Conversation: speed first" --> FAST
-    GYES -- "Prepared transcript: cost first" --> DELAY
-    GNO -- "Prepared transcript: cost first" --> DELAY
-
-    DELAY{"Low-priority processing delay acceptable?"}
-    DELAY -- No --> CHEAP
-    DELAY -- Yes --> DFEATURE{"Deferred model supports every required feature?"}
-    DFEATURE -- No --> CHEAP
-    DFEATURE -- Yes --> DCLIENT{"Deferred client path implemented and ready?"}
-    DCLIENT -- "Yes: include deferred candidates" --> CHEAP
-    DCLIENT -- "No: exclude deferred candidates" --> CHEAP
-
-    FAST{"Lowest estimated complete-result time<br/>among ready normal-priority methods?<br/>Tie: lower total cost"}
-    FAST -- "Synchronous v1 wins" --> SYNC
-    FAST -- "Buffered/live v3 streaming wins" --> STREAM
-    FAST -- "Normal v3 gRPC async wins" --> GASYNC
-    FAST -- "Normal v3 REST async wins" --> RASYNC
-    FAST -- "Normal v2 REST async wins" --> V2
-    FAST -- "No complete candidate" --> ERR
-
-    CHEAP{"Lowest finite total cost?<br/>Speech units + storage/requests/transfer<br/>Include rounding, overlap and partitions<br/>Tie: lower estimated completion time"}
-    CHEAP -- "Synchronous v1 wins" --> SYNC
-    CHEAP -- "v3 streaming wins" --> STREAM
-    CHEAP -- "Normal v3 gRPC wins" --> GASYNC
-    CHEAP -- "Normal v3 REST wins" --> RASYNC
-    CHEAP -- "Normal v2 REST wins" --> V2
-    CHEAP -- "Deferred v3 gRPC wins" --> GDEFER
-    CHEAP -- "Deferred v3 REST wins" --> RDEFER
-    CHEAP -- "Deferred v2 REST wins" --> V2DEFER
-    CHEAP -- "No complete candidate" --> ERR
-
-    subgraph APIS["One selected recognition mechanism"]
-        SYNC["REST API v1<br/>Synchronous recognition"]
-        STREAM["gRPC API v3<br/>Streaming recognition"]
-        GASYNC["gRPC API v3<br/>Normal asynchronous recognition"]
-        RASYNC["REST API v3<br/>Normal asynchronous recognition"]
-        V2["REST API v2 + S3<br/>Normal asynchronous recognition"]
-        GDEFER["gRPC API v3<br/>Deferred-general asynchronous recognition"]
-        RDEFER["REST API v3<br/>Deferred-general asynchronous recognition"]
-        V2DEFER["REST API v2 + S3<br/>Deferred-general asynchronous recognition"]
-        ERR["No technically valid complete mechanism<br/>Explain the missing requirement"]
+    subgraph INPUTS["LEFT: input factors, each shown once"]
+        I["Audio arrival<br/>live / recorded"]
+        D["Audio duration and parts"]
+        C["Channels to preserve"]
+        B["Prepared bytes / wire size"]
+        F["Required transcript features"]
+        G["Installed gRPC<br/>stream / async"]
+        S["Source<br/>inline / URI / owned upload"]
+        Q["Background delay allowed?"]
+        K["Deferred client ready?"]
+        P["Objective<br/>cost / speed"]
+        L["Result-time estimates T_i"]
+        R["RUB rates<br/>sync: 0.1626 / 15 mono seconds<br/>async: 0.0101 / pair-second<br/>deferred: 0.00254 / pair-second"]
     end
-    classDef decision fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+
+    I -.-> VS
+    I -.-> ST
+    I -.-> V2
+    I -.-> R3
+    I -.-> G3
+    D -.-> VS
+    D -.-> ST
+    D -.-> V2
+    D -.-> R3
+    D -.-> G3
+    C -.-> VS
+    C -.-> ST
+    C -.-> V2
+    C -.-> R3
+    C -.-> G3
+    B -.-> VS
+    B -.-> ST
+    B -.-> V2
+    B -.-> R3
+    B -.-> G3
+    F -.-> VS
+    F -.-> ST
+    F -.-> V2
+    F -.-> R3
+    F -.-> G3
+    G -- "streaming ready: yes/no" --> ST
+    G -- "async ready: yes/no" --> G3
+    S -.-> V2
+    S -.-> R3
+    S -.-> G3
+    K -.-> V2
+    K -.-> R3
+    K -.-> G3
+    Q -.-> V2
+    Q -.-> R3
+    Q -.-> G3
+    P -.-> V2
+    P -.-> R3
+    P -.-> G3
+    R -.-> VS
+    R -.-> ST
+    R -.-> V2
+    R -.-> R3
+    R -.-> G3
+    L -.-> VS
+    L -.-> ST
+    L -.-> V2
+    L -.-> R3
+    L -.-> G3
+
+    VS["REST v1 synchronous<br/>recorded mono; compatible text-only result<br/>Csync = rounded 15-second parts<br/>Tsync = complete-result estimate"]
+    ST["gRPC v3 streaming<br/>ready stream stub; supported mono features<br/>Cstream = rounded mono sessions<br/>Tstream = requested usable result"]
+    V2["REST v2 asynchronous<br/>C2 = speech + S3 cost<br/>T2 = result-time estimate<br/>retain exact queue/source"]
+    R3["REST v3 asynchronous<br/>C3R = speech + source cost<br/>T3R = result-time estimate<br/>retain exact queue/source"]
+    G3["gRPC v3 asynchronous<br/>C3G = speech + source cost<br/>T3G = result-time estimate<br/>retain exact queue/source"]
+
+    P -- "Prepared: cost first" --> COST{"Minimum finite pair<br/>(total cost C, result time T)?"}
+    P -- "Conversation: speed first" --> SPEED{"Minimum finite pair<br/>(usable-result time T, total cost C)?"}
+    VS -.-> COST
+    ST -.-> COST
+    V2 -.-> COST
+    R3 -.-> COST
+    G3 -.-> COST
+    VS -.-> SPEED
+    ST -.-> SPEED
+    V2 -.-> SPEED
+    R3 -.-> SPEED
+    G3 -.-> SPEED
+
+    COST -- "sync wins" --> OSYNC
+    COST -- "stream wins" --> OSTREAM
+    COST -- "v2 async wins" --> OV2
+    COST -- "v3 REST async wins" --> OR3
+    COST -- "v3 gRPC async wins" --> OG3
+    COST -- "No eligible candidate" --> ERR
+    SPEED -- "sync wins" --> OSYNC
+    SPEED -- "stream wins" --> OSTREAM
+    SPEED -- "v2 async wins" --> OV2
+    SPEED -- "v3 REST async wins" --> OR3
+    SPEED -- "v3 gRPC async wins" --> OG3
+    SPEED -- "No eligible candidate" --> ERR
+
+    subgraph APIS["RIGHT: exactly one selected recognition mechanism"]
+        OSYNC["REST API v1<br/>Synchronous"]
+        OSTREAM["gRPC API v3<br/>Streaming"]
+        OV2["REST API v2<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        OR3["REST API v3<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        OG3["gRPC API v3<br/>Asynchronous<br/>Exact chosen queue/source retained"]
+        ERR["No technically valid mechanism"]
+    end
+    classDef factor fill:#eef4ff,stroke:#3762a6,color:#152b4a;
+    classDef calculation fill:#fff8e1,stroke:#a67c00,color:#493600;
+    classDef decision fill:#e8eaf6,stroke:#3949ab,color:#152b4a;
     classDef api fill:#e8f5e9,stroke:#2e7d32,color:#133b17;
     classDef error fill:#ffebee,stroke:#b71c1c,color:#6a1111;
-    class LIVE,SLIB,SFEATURES,SIZE,GSHORT,GINLINE,GLARGE,GYES,GNO,DELAY,DFEATURE,DCLIENT,FAST,CHEAP decision;
-    class SYNC,STREAM,GASYNC,RASYNC,V2,GDEFER,RDEFER,V2DEFER api;
+    class I,D,C,B,F,G,S,Q,K,P,L,R factor;
+    class VS,ST,V2,R3,G3 calculation;
+    class COST,SPEED decision;
+    class OSYNC,OSTREAM,OV2,OR3,OG3 api;
     class ERR error;
 ```
 
