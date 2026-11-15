@@ -151,7 +151,7 @@ Proposed commissioning scope is two focused One-ring canaries: **one synthetic
 S3-backed recognition**, proving delivered transcript plus deletion of its owned
 S3 version, and **one short native TTS reply**, proving delivered audio plus local
 staging disposal. Fault combinations stay local. Cleanup retry adds zero paid
-speech submissions. The 65-case matrix remains paused. These canaries are proposed,
+speech submissions. The 65-case voice matrix is retired; voice acceptance uses exactly three cases. These canaries are proposed,
 not executed tests or permission to modify live agent configuration.
 
 ## Boundaries
@@ -163,8 +163,8 @@ not executed tests or permission to modify live agent configuration.
 - Ask first: live IAM/credential, bucket-versioning/retention or runtime/dependency
   changes, and additional paid test dimensions.
 - Never: delete caller-owned S3 sources, unrelated/newer versions or final exports;
-  delete by prefix/age; resubmit paid speech for housekeeping; patch Hermes; resume
-  the paused 65-case matrix; claim acoustic or commissioning acceptance from mocks.
+  delete by prefix/age; resubmit paid speech for housekeeping; patch Hermes; resurrect
+  the retired 65-case matrix; claim acoustic or commissioning acceptance from mocks.
 
 ## Success Criteria
 
@@ -206,6 +206,5 @@ The operator explicitly ordered this specification updated and execution continu
 on 2026-11-15. Implement the S3 completion/retry path first, then terminal/restart
 ownership handling and TTS fragment disposal; verify each slice locally before
 publication and use the two focused One-ring canaries for commissioning. No additional
-approval hold is introduced. Existing commissioning/merge conditions and the pause
-on the 65-case matrix remain effective. No live IAM, bucket policy or Hermes source
+approval hold is introduced. Existing commissioning/merge conditions remain effective; the 65-case matrix is retired, replaced by three live voice cases. No live IAM, bucket policy or Hermes source
 change is authorized by this cleanup increment.
