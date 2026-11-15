@@ -565,7 +565,8 @@ class HermesTTSBindingTests(unittest.TestCase):
         provider = self.provider(fake_output=True)
         publish = artifacts.atomic_write
         def late_write(path, data, **kwargs):
-            output.write_bytes(b"late concurrent owner")
+            if Path(path).suffix == ".mp3":
+                output.write_bytes(b"late concurrent owner")
             return publish(path, data, **kwargs)
         with patch("yandex_speech.artifacts.atomic_write", side_effect=late_write):
             result = Path(provider.synthesize("Текст.", str(output)))

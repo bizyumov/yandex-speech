@@ -152,3 +152,42 @@ class ArtifactLifecycleTests(unittest.TestCase):
         self.assertEqual(result["cleanup"]["status"], "retained")
         self.assertIn((upload.bucket, upload.key, upload.data["version_id"]), self.storage.versions)
         self.assertEqual(self.storage.deletes, [])
+
+    def test_confirmed_cloud_failure_releases_upload_but_preserves_primary_error(self):
+        job = self.client.start_transcription(self.source, transport="rest", use_storage=True)
+        upload = self.upload_for(job)
+        self.transport.get_operation = lambda operation_id, timeout: {
+            "id": operation_id, "done": True, "error": {"code": 13}}
+        with self.assertRaises(SpeechError) as raised:
+            self.client.poll_until_complete(job)
+        self.assertEqual(raised.exception.category, "PROVIDER")
+        self.assertEqual(UploadReceipt.load(upload.manifest_path).status, "deleted")
+        self.assertTrue(self.source.exists())
+        self.assertEqual(len(self.transport.submitted), 1)
+
+    def test_definite_rejection_releases_upload_without_a_second_submission(self):
+        self.transport.recognize_file = Mock(side_effect=SpeechError("PERMISSION", "definite rejection"))
+        with self.assertRaises(SpeechError) as raised:
+            self.client.start_transcription(self.source, transport="rest", use_storage=True)
+        job = JobHandle.load(raised.exception.receipt_path)
+        self.assertEqual(raised.exception.category, "PERMISSION")
+        self.assertEqual(self.upload_for(job).status, "deleted")
+        self.assertEqual(self.transport.recognize_file.call_count, 1)
+
+    def test_second_accepted_consumer_prevents_deletion_until_it_finishes(self):
+        first = self.client.start_transcription(self.source, transport="rest", use_storage=True)
+        upload = self.upload_for(first)
+        second = self.client.start_transcription(upload, transport="rest")
+        result = self.client.poll_until_complete(first)
+        self.assertEqual(result["cleanup"]["status"], "retained")
+        self.assertEqual(UploadReceipt.load(upload.manifest_path).status, "uploaded")
+        self.client.poll_until_complete(second)
+        self.assertEqual(UploadReceipt.load(upload.manifest_path).status, "deleted")
+        self.assertEqual(len(self.storage.puts), 1)
+        self.assertEqual(len(self.transport.submitted), 2)
+
+    def test_success_reply_without_actual_s3_deletion_stays_pending(self):
+        self.storage.delete_object = lambda **request: {"ResponseMetadata": {"HTTPStatusCode": 204}}
+        result = self.client.transcribe_auto(self.source, transport="rest", use_storage=True)
+        self.assertEqual(result["cleanup"]["status"], "pending")
+        self.assertEqual(result["status"], "completed")

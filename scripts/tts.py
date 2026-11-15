@@ -51,7 +51,7 @@ class TextToSpeech:
     def _options(self, *, lang=None, voice=None, fmt=None, format=None, speed=None,
                  emotion=None, api_version=None, transport=None, file_method=None, model=None, role=None,
                  text_format=None, unsafe_mode=None, sample_rate=None, volume=None,
-                 pitch_shift=None, duration_ms=None, duration_policy=None, **unknown):
+                 pitch_shift=None, duration_ms=None, duration_policy=None, auto_cleanup=None, **unknown):
         if unknown:
             raise SpeechError("CONFIG", "unknown standalone synthesis options")
         if format is not None and fmt is not None and format != fmt:
@@ -63,7 +63,8 @@ class TextToSpeech:
             ("api_version",str(api_version) if api_version is not None else None),
             ("transport",transport),("file_method",file_method),("model",model),("role",role),("text_format",text_format),
             ("unsafe_mode",unsafe_mode),("sample_rate_hertz",sample_rate),("volume",volume),
-            ("pitch_shift",pitch_shift),("duration_ms",duration_ms),("duration_policy",duration_policy)] if value is not None}
+            ("pitch_shift",pitch_shift),("duration_ms",duration_ms),("duration_policy",duration_policy),
+            ("auto_cleanup",auto_cleanup)] if value is not None}
         settings = resolve_settings(_context=self.context, _adapter=self.adapter_defaults,
                                     _explicit={"tts":values}, _environment=self.environment)
         from yandex_speech.tts_voices import resolve_file_options
@@ -208,7 +209,7 @@ class TextToSpeech:
                     if plan.method == "stream":
                         result = collect_stream_file(piece, execution, api_key=self.api_key,
                             sources=dict(plan.request.sources), deadline_seconds=remaining,
-                            partial_directory=partial)
+                            partial_directory=None if settings.value("tts.auto_cleanup", True) else partial)
                         data = result.data
                         receipts.append(dict(response_records=result.response_records, audio_records=result.audio_records,
                             first_audio_seconds=result.first_audio_seconds, final_seconds=result.final_seconds))
@@ -275,7 +276,7 @@ class TextToSpeech:
                 method=plan.method, api_version=plan.api_version, transport=plan.transport,
                 request_attempts=request_attempts, output_part_lengths=part_lengths, duration_splits=splits)
             directory = getattr(error, "partial_dir", None)
-            if completed or over_budget is not None or directory is not None:
+            if not settings.value("tts.auto_cleanup", True) and (completed or over_budget is not None or directory is not None):
                 directory = Path(directory or partial)
                 try:
                     directory.mkdir(parents=True, exist_ok=True)

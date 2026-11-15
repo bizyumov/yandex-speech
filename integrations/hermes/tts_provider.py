@@ -144,7 +144,7 @@ class YandexTTSProvider(TTSProvider):
 
     def synthesize(self, text, output_path, *, voice=None, model=None, speed=None,
                    format="mp3", **extra):
-        from yandex_speech.artifacts import atomic_write
+        from yandex_speech.artifacts import atomic_write, staging_directory
         started = time.monotonic()
         requested = Path(output_path)
         self._empty_allocation(requested)
@@ -155,42 +155,37 @@ class YandexTTSProvider(TTSProvider):
         target = requested.with_suffix(extension)
         before = self._empty_allocation(target)
         client = self._client(voice=voice, model=model, speed=speed)
-        stage = Path(tempfile.mkdtemp(prefix=".yandex-native-tts-", dir=target.parent))
-        retain = False
-        staged_output = stage / ("audio" + extension)
-        try:
-            client.synthesize(text, staged_output, format=fmt)
-            if self._empty_allocation(target) != before:
-                raise SpeechError("STATE", "native TTS output allocation changed during synthesis")
-            # A preallocated inode can acquire another writer after any check.
-            # The native SPI consumes the returned path, so preserve that inode
-            # and publish a unique sibling instead of ever enabling overwrite.
-            output = target if before is None else target.with_name(
-                target.stem + "-" + uuid.uuid4().hex + extension)
-            atomic_write(output, staged_output.read_bytes())
-            metadata = getattr(client, "last_synthesis", {})
-            receipt = {name: metadata[name] for name in (
-                "api_version", "transport", "method", "voice", "model", "role", "format", "parts",
-                "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes",
-                "submitted_part_lengths", "output_part_lengths", "request_attempts", "rpc_calls", "unsafe_mode")
-                if name in metadata}
-            receipt.update(output=str(output), input_characters=len(text),
-                           elapsed_seconds=time.monotonic()-started,
-                           file_ready_timestamp=time.time(), process_id=os.getpid())
-            receipt.setdefault("method", "utterance")
-            logging.getLogger(__name__).info("Yandex native TTS receipt %s", json.dumps(receipt))
-            return str(output)
-        except Exception as error:
-            if isinstance(error, SpeechError) and error.category == "CONFIG" and not getattr(client, "last_synthesis", None):
-                logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
-                    "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
-            retain = getattr(error, "partial_dir", None) is not None or staged_output.is_file()
-            if retain and getattr(error, "partial_dir", None) is None:
-                error.partial_dir = stage
-            raise
-        finally:
-            if not retain:
-                shutil.rmtree(stage)
+        cleanup = client._options()[0].value("tts.auto_cleanup", True)
+        base = self.workspace / ".local/state/yandex-speech/tts-staging"
+        with staging_directory(base, retain_on_error=not cleanup) as stage:
+            staged_output = stage / ("audio" + extension)
+            try:
+                client.synthesize(text, staged_output, format=fmt)
+                if self._empty_allocation(target) != before:
+                    raise SpeechError("STATE", "native TTS output allocation changed during synthesis")
+                # Preserve the host's preallocated inode; the SPI consumes the returned path.
+                output = target if before is None else target.with_name(
+                    target.stem + "-" + uuid.uuid4().hex + extension)
+                atomic_write(output, staged_output.read_bytes())
+                metadata = getattr(client, "last_synthesis", {})
+                receipt = {name: metadata[name] for name in (
+                    "api_version", "transport", "method", "voice", "model", "role", "format", "parts",
+                    "planned_parts", "duration_splits", "assembly", "stream_receipts", "output_budget_bytes",
+                    "submitted_part_lengths", "output_part_lengths", "request_attempts", "rpc_calls", "unsafe_mode")
+                    if name in metadata}
+                receipt.update(output=str(output), input_characters=len(text),
+                               elapsed_seconds=time.monotonic()-started,
+                               file_ready_timestamp=time.time(), process_id=os.getpid())
+                receipt.setdefault("method", "utterance")
+                logging.getLogger(__name__).info("Yandex native TTS receipt %s", json.dumps(receipt))
+                return str(output)
+            except BaseException as error:
+                if isinstance(error, SpeechError) and error.category == "CONFIG" and not getattr(client, "last_synthesis", None):
+                    logging.getLogger(__name__).info("Yandex native TTS preflight %s", json.dumps({
+                        "ready": False, "local_only": True, "category": error.category, "message": str(error)}))
+                if not cleanup and getattr(error, "partial_dir", None) is None and staged_output.is_file():
+                    error.partial_dir = stage
+                raise
 
     def stream(self, text, *, voice=None, model=None, format="opus", **extra):
         if format != "pcm":

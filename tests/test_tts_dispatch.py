@@ -69,7 +69,7 @@ class FileDispatchTests(unittest.TestCase):
                 side_effect=[self.first, SpeechError("SUBMISSION_UNCERTAIN", "synthetic middle failure")]) as provider:
             with self.assertRaises(SpeechError) as caught:
                 self.client.synthesize("a" * 600, target, file_method="utterance",
-                    api_version="3", transport="rest", fmt="oggopus")
+                    api_version="3", transport="rest", fmt="oggopus", auto_cleanup=False)
         self.assertFalse(target.exists())
         self.assertEqual(provider.call_count, 2)
         self.assertEqual((caught.exception.partial_dir / "part-000000.ogg").read_bytes(), self.first)
@@ -202,7 +202,7 @@ class FileDispatchTests(unittest.TestCase):
                 self.client, "_synthesize_request", side_effect=[self.first, self.tail]) as provider:
             with self.assertRaises(SpeechError) as caught:
                 self.client.synthesize("a" * 600, output, file_method="utterance",
-                    api_version="3", transport="rest", fmt="oggopus")
+                    api_version="3", transport="rest", fmt="oggopus", auto_cleanup=False)
         self.assertEqual(caught.exception.category, "LIMIT")
         self.assertEqual(provider.call_count, 2)
         self.assertFalse(output.exists())
