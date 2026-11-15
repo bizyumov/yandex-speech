@@ -59,6 +59,9 @@ The provider warns of possible quality degradation with unsafe mode in its
 [v3 request contract](https://aistudio.yandex.ru/en/docs/speechkit/tts-v3/api-ref/Synthesizer/utteranceSynthesis),
 so unsafe mode remains explicit opt-in.
 
+Count the actual selector input after formatting. Record the whole logical reply
+and any Hermes outer chunks separately; undisclosed text is not a selector input.
+
 Text above 5,000 characters is partitioned for the selected route and assembled
 into the requested complete file. V1 may require partitioning earlier because of
 its encoded-byte budget. Independent MP3/Ogg outputs require an available encoded
@@ -175,6 +178,11 @@ missing/broken dependencies, SSML, unsafe mode, output formats, encoded v1 bytes
 | 200 characters: below 250 | Does the ordinary short reply use REST v3 and deliver the complete selected voice? |
 | 1,000 characters: middle band below 5,000 | Does available compatible v3 gRPC streaming avoid ordinary 250-character splitting and deliver the complete reply? |
 | 5,500 characters: above 5,000 | Does the selected route partition/assemble the whole reply, with its final tail delivered in the same voice? |
+
+The long case must actually exercise a greater-than-5,000-character selector
+input; upstream host chunking into smaller callbacks alone does not prove that
+branch. Use the existing isolated One-ring test scope, preserving permanent
+production configuration, and record the real call boundary.
 
 Use the same selected voice/model/role and automatic API/transport/method settings
 for these three. Record the actual route, whole-input length, completed output and
