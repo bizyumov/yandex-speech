@@ -1,9 +1,13 @@
 # Spec: automatic S3 upload cleanup and abandoned TTS fragments (#98)
 
-**Status: Specify — awaiting operator review.** Included in PR #97. Issue #98
+**Status: Implement — operator explicitly ordered specification update and execution on 2026-11-15.** Included in PR #97. Issue #98
 is the requirements authority; this file is its complete review projection.
 
 ## Objective
+
+Prevent ongoing storage charges from finished and abandoned speech uploads.
+Cleanup must release the owned stored bytes, including the uploaded version in a
+versioned bucket; adding a delete marker does not satisfy this outcome.
 
 Automatically delete **temporary audio objects uploaded by this skill to Yandex
 Object Storage through its S3 API** once recognition no longer needs them. The
@@ -24,6 +28,12 @@ At the inspected application baseline 872fb98, S3 upload receipts declare
 job, a durable saved result and an immutable S3 object version. This change adds
 automatic lifecycle handling while preserving those ownership protections.
 
+Normal operation enables `speech.object_storage.auto_cleanup=true` and
+`speech.tts.auto_cleanup=true` in the existing HOME/workspace configuration.
+An explicit false retains that operation's artifacts and must be visible in its
+receipt/diagnostics because retained S3 bytes continue to cost money. Configuration
+location and existing precedence stay unchanged; no retention timer is introduced.
+
 The required S3 behavior is:
 
 | S3 upload / recognition condition | Required action |
@@ -31,10 +41,10 @@ The required S3 behavior is:
 | Inline recognition; no S3 upload was created | Perform no S3 upload or deletion for cleanup. |
 | Skill-created S3 upload; cloud job accepted and still running | Keep the S3 object available to that job. |
 | Recognition completed, transcript durably saved, no other consumer needs the upload | Automatically delete that exact owned S3 object version before returning completion; preserve the recording, saved result and exported transcript. |
-| Provider confirms terminal failure or reports cancellation, with no remaining consumer or supported recovery needing the input | Delete the eligible owned S3 object version; preserve the job/upload receipt and useful error. |
+| Provider confirms terminal failure or reports cancellation, with no remaining consumer or supported recovery needing the input | Delete the eligible owned S3 object version only after checking the receipt confirms no remaining consumer or supported recovery needs it; preserve the job/upload receipt and useful error. |
 | Upload succeeded but recognition was definitely never submitted | Delete the eligible owned S3 object version when that attempted operation ends. |
 | Recognition acceptance is uncertain, or the local wait was cancelled/timed out | Keep the S3 object and job/upload receipts; reconcile the existing cloud job before disposal. Never submit recognition again merely to clean S3. |
-| S3 PUT acknowledgement was lost | Recover the existing upload identity through its ownership receipt and S3 inspection; do not repeat PUT or recognition. Delete only after ownership, version and consumer state are established. |
+| S3 upload outcome is unknown after a timeout or connection failure before the response arrived | Recover the existing upload identity through its ownership receipt and S3 inspection; do not repeat PUT or recognition. Delete only after ownership, version and consumer state are established. |
 | Process stopped before S3 cleanup finished | The next invocation/recovery in the same owned state scope reconciles the saved receipt and retries eligible deletion. Live owners and accepted/uncertain jobs stay protected. |
 | S3 deletion is denied, fails or its response is lost | Persist cleanup-pending with the exact target and cause; verify/retry that same deletion without re-uploading audio or repeating paid speech work. |
 
@@ -60,8 +70,8 @@ and intermediates while preserving the returned audio for delivery. On terminal
 failure, cancellation or producer close, dispose of abandoned parts. Keep fragments
 only while a real supported continuation still needs them. The current general
 TTS interfaces do not expose a recovery operation for abandoned directories;
-indefinite retention is not recovery. This proposed rule replaces unconditional
-failed-part retention in #83 after approval. It creates no new TTS cloud-operation ID.
+indefinite retention is not recovery. This operator-requested rule replaces unconditional
+failed-part retention in #83. It creates no new TTS cloud-operation ID.
 
 ## Tech Stack
 
@@ -192,7 +202,10 @@ not executed tests or permission to modify live agent configuration.
 
 ## Open Questions
 
-No unresolved product choice is delegated to the operator. The review decision is
-whether this S3-first specification faithfully and completely expresses #98 and its
-secondary TTS requirement. Approval advances this addition to Plan, not implementation,
-commissioning or release. Existing #83 authorization and its test pause remain unchanged.
+The operator explicitly ordered this specification updated and execution continued
+on 2026-11-15. Implement the S3 completion/retry path first, then terminal/restart
+ownership handling and TTS fragment disposal; verify each slice locally before
+publication and use the two focused One-ring canaries for commissioning. No additional
+approval hold is introduced. Existing commissioning/merge conditions and the pause
+on the 65-case matrix remain effective. No live IAM, bucket policy or Hermes source
+change is authorized by this cleanup increment.

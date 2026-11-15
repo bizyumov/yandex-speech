@@ -86,6 +86,34 @@ class SpeechTranscriber:
             job_dir=self.job_dir.parent / "uploads", _context=self.context,
             _adapter_defaults=self.adapter_defaults, _environment=self._environment)
 
+    def _cleanup_job(self, job, result=None):
+        """Dispose only this job's owned uploads; keep saved results usable."""
+        if not job.owned_uploads:
+            return result
+        uploads = []
+        enabled = job.data.get("auto_cleanup", self.settings.value("object_storage.auto_cleanup", True))
+        for reference in job.owned_uploads:
+            item = {"upload_id": reference.get("upload_id")}
+            if not enabled:
+                item.update(status="retained", reason="automatic cleanup explicitly disabled")
+            else:
+                try:
+                    uploader = self._storage_uploader(bucket=reference["bucket"], endpoint=reference["endpoint"])
+                    disposed = uploader.cleanup(Path(reference["manifest_path"]), job)
+                    item.update(status=disposed["status"])
+                except SpeechError as error:
+                    item.update(status="pending", reason=error.category, code=error.code)
+                except Exception:
+                    item.update(status="pending", reason="cleanup failed; retry this saved job")
+            uploads.append(item)
+        status = ("pending" if any(item["status"] == "pending" for item in uploads)
+                  else "deleted" if all(item["status"] == "deleted" for item in uploads) else "retained")
+        job.data["cleanup"] = {"status": status, "uploads": uploads}
+        job.save()
+        if result is not None:
+            return dict(result, cleanup=copy.deepcopy(job.data["cleanup"]))
+        return copy.deepcopy(job.data["cleanup"])
+
     def _file_preflight(self):
         """Check configured file prerequisites without media or provider requests."""
         if not self.api_key:
@@ -278,6 +306,7 @@ class SpeechTranscriber:
             job = JobHandle.create(self.job_dir, info, parameters=params, deadline_at=deadline,
                                    api_version=version, transport=actual)
             job.data["routing"] = {"requested_transport": settings.value("transport"), "reasons": reasons}
+            job.data["auto_cleanup"] = settings.value("object_storage.auto_cleanup", True)
             if isinstance(source, UploadReceipt):
                 job.data["owned_uploads"] = [source.reference()]
             job.save()
@@ -364,7 +393,7 @@ class SpeechTranscriber:
             with job.lock():
                 cached = job.cached_result()
                 if cached is not None:
-                    return cached
+                    return self._cleanup_job(job, cached)
                 policy = self._options(transport=transport).value("transport")
                 if policy == "auto" and job.data["transport"] == "rest":
                     policy = "rest"
@@ -418,7 +447,7 @@ class SpeechTranscriber:
                 result.update(operation_id=job.operation_id, job_id=job.job_id,
                               job_manifest_path=str(job.manifest_path),
                               routing=copy.deepcopy(job.data.get("routing", {})))
-                return job.store_result(result)
+                return self._cleanup_job(job, job.store_result(result))
         except SpeechError as error:
             if error.category in {"CANCELLED", "TIMEOUT"}:
                 job.set_status("cancelled" if error.category == "CANCELLED" else "failed")
